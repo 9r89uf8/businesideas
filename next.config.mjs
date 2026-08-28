@@ -1,6 +1,6 @@
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-  /* config options here */
-};
+import { withWorkflow } from "workflow/next";
 
-export default nextConfig;
+/** @type {import('next').NextConfig} */
+const nextConfig = {};
+
+export default withWorkflow(nextConfig);

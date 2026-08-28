@@ -1,0 +1,107 @@
+@import "tailwindcss";
+
+:root {
+  --ink: #18211d;
+  --ink-soft: #4c5b54;
+  --paper: #f3f1ea;
+  --paper-bright: #fbfaf6;
+  --line: #d8d7cf;
+  --moss: #345c4b;
+  --moss-bright: #b9f06b;
+  --amber: #e4a853;
+  --rose: #ca6f64;
+}
+
+@theme inline {
+  --color-background: var(--paper);
+  --color-foreground: var(--ink);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--paper);
+  color: var(--ink);
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 88% -10%, rgb(185 240 107 / 0.16), transparent 28rem),
+    linear-gradient(180deg, var(--paper-bright) 0, var(--paper) 22rem);
+  color: var(--ink);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+  background: var(--moss-bright);
+  color: var(--ink);
+}
+
+.shell {
+  margin: 0 auto;
+  width: min(100% - 2rem, 76rem);
+}
+
+.eyebrow {
+  color: var(--moss);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.panel {
+  border: 1px solid var(--line);
+  border-radius: 1.35rem;
+  background: rgb(251 250 246 / 0.86);
+  box-shadow: 0 1px 0 rgb(24 33 29 / 0.05), 0 18px 50px rgb(24 33 29 / 0.05);
+}
+
+.focus-ring:focus-visible {
+  outline: 3px solid rgb(185 240 107 / 0.7);
+  outline-offset: 3px;
+}
+
+@keyframes pulse-ring {
+  0%, 100% { box-shadow: 0 0 0 0 rgb(185 240 107 / 0.35); }
+  50% { box-shadow: 0 0 0 0.45rem rgb(185 240 107 / 0); }
+}
+
+.status-pulse {
+  animation: pulse-ring 2.2s ease-out infinite;
+}
+
+@media (max-width: 640px) {
+  .shell {
+    width: min(100% - 1.25rem, 76rem);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
