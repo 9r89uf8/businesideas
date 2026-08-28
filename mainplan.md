@@ -10,6 +10,46 @@ That keeps the system reproducible and prevents model context from becoming an u
 
 ---
 
+## Approved version-one amendments — August 28, 2026
+
+These user-approved changes supersede narrower or conflicting statements later in this blueprint. All other architecture, evidence, security, retention, deduplication, and acceptance rules remain in force.
+
+### Owner access
+
+Supabase Auth remains the authentication system and `OWNER_USER_ID` remains the final authorization boundary. The primary returning-owner flow is now email and password so access does not depend on email delivery. Magic link remains available as a one-time setup and recovery fallback. An authenticated owner can set or change the password from Settings; a non-owner Supabase session must be rejected and cleared.
+
+### Hybrid X discovery and source inspection
+
+The editable topic query remains the broad discovery lane. Settings may also contain up to 12 X usernames for a preferred-account lane.
+
+1. Preferred-account search must still be constrained to AI-relevant language and exclude reposts.
+2. Preferred-account posts must pass a real engagement and discussion-quality gate before selection.
+3. Qualifying preferred-account posts may fill at most half of the posts sent to signal extraction. This is a ceiling, not a quota.
+4. Topic discovery fills every unused slot. If preferred accounts have no qualifying posts, the run behaves like the topic-only pipeline.
+5. Both lanes share the existing deterministic ranking, deduplication, total candidate limit, evidence rules, and raw-content retention policy.
+6. `run_posts` records whether a post came from the `followed` or `topic` lane.
+7. The private `/posts` page shows the stored X text, author, direct link, public engagement snapshot, deterministic selection state, and any later model signal. It must label raw X content separately from model interpretation.
+
+### Self-serve AI website opportunity contract
+
+Final ideation now targets self-serve web products, including products that save users time, help users make or retain money, support remote work, serve concrete LATAM needs without relying on translation, replace an expensive or complicated incumbent service, or give businesses a repeatable distribution or social-content advantage. These are soft directions: evidence and quality decide what is published, and no archetype receives a guaranteed slot.
+
+Every published idea must pass all of these hard gates:
+
+* Deliverable through a website, without hardware.
+* No healthcare, therapy, medical-adjacent, synthetic-companion, or generic-chatbot product.
+* No consulting, agency, audit, workshop, or custom-implementation delivery.
+* No enterprise product that depends on a long sales process.
+* A credible one-developer MVP in roughly two to six weeks.
+* The customer receives the core value without booking a call.
+* A concrete time, money, information, or distribution advantage.
+* A plausible recurring-use reason.
+* Any conversational interface must serve a specific audience and action with a defensible distribution advantage; “chat with AI” is not the product.
+
+Ideas that fail a hard gate are discarded before publication. The final model and JavaScript validator may return zero ideas; neither may add a weak idea merely to fill a slot.
+
+---
+
 ## 1. Product definition
 
 The application is a private, single-user research dashboard that runs once per day and:

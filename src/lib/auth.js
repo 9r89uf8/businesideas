@@ -2,6 +2,7 @@ import "server-only";
 
 import { cache } from "react";
 import { redirect } from "next/navigation";
+import { classifyOwnerSession, OWNER_SESSION_STATUS } from "@/lib/auth-helpers";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 function configuredOwnerId() {
@@ -19,11 +20,22 @@ export const getOwnerIdentity = cache(async () => {
   const { data, error } = await supabase.auth.getClaims();
   const userId = data?.claims?.sub;
 
-  if (error || !userId || userId !== configuredOwnerId()) {
+  if (
+    error ||
+    classifyOwnerSession(userId, configuredOwnerId()) !==
+      OWNER_SESSION_STATUS.OWNER
+  ) {
     return null;
   }
 
-  return { ownerId: userId, supabase };
+  return {
+    ownerId: userId,
+    ownerEmail:
+      typeof data?.claims?.email === "string"
+        ? data.claims.email
+        : process.env.OWNER_EMAIL || "",
+    supabase,
+  };
 });
 
 export async function requireOwner() {
@@ -41,5 +53,8 @@ export async function requireOwnerForApi() {
 }
 
 export function isConfiguredOwner(userId) {
-  return Boolean(userId) && userId === configuredOwnerId();
+  return (
+    classifyOwnerSession(userId, configuredOwnerId()) ===
+    OWNER_SESSION_STATUS.OWNER
+  );
 }

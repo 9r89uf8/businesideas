@@ -4,7 +4,13 @@ import test from "node:test";
 import {
   boundIdeaGenerationClusters,
   buildGenerateIdeasPrompt,
+  GENERATE_IDEAS_INSTRUCTIONS,
 } from "../src/lib/prompts/generate-ideas.js";
+import {
+  DEFAULT_PREFERENCES,
+  IDEA_HARD_FILTER_CHECKS,
+  PIPELINE,
+} from "../src/lib/config.js";
 import { validateSolResponse } from "../src/lib/validation.js";
 
 function evidence(post_id, author_id, opportunity_score) {
@@ -52,6 +58,22 @@ function idea(title, source_post_ids, rank) {
     differentiation: "accounting-specific controls",
     speed_to_first_revenue: "one to three weeks",
     validation_plan: "Contact 20 owners and sell one pilot in seven days.",
+    product_spec: {
+      archetype: "specific_action_tool",
+      core_action: "Checks uploaded AI-generated work against a saved rubric.",
+      value_mechanisms: ["save_time", "save_money"],
+      delivery_mode: "self_serve_web_app",
+      sales_motion: "self_serve_checkout",
+      business_model: "subscription",
+      mvp_scope: "Upload, rubric checks, flagged output, and saved templates.",
+      mvp_build_weeks: 4,
+      recurring_trigger: "Every new client deliverable needs review.",
+      latam_fit: "adaptable",
+      latam_rationale: "The workflow can serve firms in LATAM without translation.",
+    },
+    hard_filter_checks: Object.fromEntries(
+      IDEA_HARD_FILTER_CHECKS.map((name) => [name, true]),
+    ),
     risks: ["firms may build internally"],
     assumptions: ["owners can see informal AI usage"],
     evidence_score: 80,
@@ -113,4 +135,68 @@ test("bounded evidence rejects clusters without three excerpt-bearing authors", 
     () => boundIdeaGenerationClusters([weakCluster]),
     /evidence excerpts from 3 authors/,
   );
+});
+
+test("Sol's contract makes self-serve web eligibility hard and archetypes soft", () => {
+  for (const phrase of [
+    "delivered through a website",
+    "without booking a call",
+    "consulting, an agency, an audit, a workshop, or custom implementation",
+    "healthcare-, therapy-, or medical-adjacent",
+    "enterprise product with a long sales process",
+    "translation product",
+    "generic chatbot, synthetic companion",
+    "specific action and produces an outcome",
+    "concrete recurring trigger",
+  ]) {
+    assert.match(GENERATE_IDEAS_INSTRUCTIONS, new RegExp(phrase));
+  }
+
+  assert.match(GENERATE_IDEAS_INSTRUCTIONS, /soft archetypes, not quotas/);
+  assert.match(GENERATE_IDEAS_INSTRUCTIONS, /LATAM is a preference, not evidence/);
+  assert.match(GENERATE_IDEAS_INSTRUCTIONS, /weak companion idea/);
+  assert.match(GENERATE_IDEAS_INSTRUCTIONS, /empty ideas array/);
+  assert.match(
+    GENERATE_IDEAS_INSTRUCTIONS,
+    new RegExp(`${PIPELINE.minimumMvpBuildWeeks} to ${PIPELINE.maximumMvpBuildWeeks} weeks`),
+  );
+  assert.match(
+    GENERATE_IDEAS_INSTRUCTIONS,
+    new RegExp(`${PIPELINE.minimumIdeaEvidence}/100 evidence`),
+  );
+});
+
+test("legacy service preferences are neutralized before Sol sees them", () => {
+  const messages = buildGenerateIdeasPrompt({
+    clusters: [cluster()],
+    preferences: {
+      offer_bias: "services_first",
+      preferred_customers: ["local businesses"],
+      preferred_business_models: [
+        "consulting",
+        "productized service",
+        "small SaaS",
+      ],
+      avoid: ["gambling"],
+      personal_advantages: ["growth marketing"],
+    },
+  });
+  const payload = JSON.parse(messages[1].content.split("\n")[1]);
+  const preferences = payload.preferences;
+
+  assert.equal(preferences.offer_bias, DEFAULT_PREFERENCES.offer_bias);
+  assert.ok(preferences.preferred_customers.includes("local businesses"));
+  assert.ok(
+    preferences.preferred_customers.includes(
+      "LATAM entrepreneurs and small businesses",
+    ),
+  );
+  assert.ok(preferences.preferred_business_models.includes("small SaaS"));
+  assert.ok(preferences.preferred_business_models.includes("self-serve SaaS"));
+  assert.ok(!preferences.preferred_business_models.includes("consulting"));
+  assert.ok(
+    !preferences.preferred_business_models.includes("productized service"),
+  );
+  assert.ok(preferences.avoid.includes("translation products"));
+  assert.ok(preferences.avoid.includes("gambling"));
 });

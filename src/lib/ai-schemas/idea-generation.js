@@ -1,4 +1,13 @@
-import { PIPELINE } from "../config.js";
+import {
+  IDEA_BUSINESS_MODELS,
+  IDEA_DELIVERY_MODES,
+  IDEA_HARD_FILTER_CHECKS,
+  IDEA_LATAM_FITS,
+  IDEA_PRODUCT_ARCHETYPES,
+  IDEA_SALES_MOTIONS,
+  IDEA_VALUE_MECHANISMS,
+  PIPELINE,
+} from "../config.js";
 
 export const IDEA_GENERATION_SCHEMA_NAME = "idea_generation";
 
@@ -40,6 +49,96 @@ export const ideaGenerationSchema = {
           differentiation: { type: "string" },
           speed_to_first_revenue: { type: "string" },
           validation_plan: { type: "string" },
+          product_spec: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              archetype: {
+                type: "string",
+                enum: IDEA_PRODUCT_ARCHETYPES,
+                description:
+                  "Best-fit soft archetype. This is a classification, never a quota.",
+              },
+              core_action: {
+                type: "string",
+                description:
+                  "The specific action the website performs and concrete outcome it produces; not a generic conversation.",
+              },
+              value_mechanisms: {
+                type: "array",
+                minItems: 1,
+                maxItems: 3,
+                items: { type: "string", enum: IDEA_VALUE_MECHANISMS },
+              },
+              delivery_mode: {
+                type: "string",
+                enum: IDEA_DELIVERY_MODES,
+              },
+              sales_motion: {
+                type: "string",
+                enum: IDEA_SALES_MOTIONS,
+              },
+              business_model: {
+                type: "string",
+                enum: IDEA_BUSINESS_MODELS,
+              },
+              mvp_scope: {
+                type: "string",
+                description:
+                  "A narrow description of what the first build includes and excludes.",
+              },
+              mvp_build_weeks: {
+                type: "integer",
+                minimum: 1,
+                maximum: 52,
+                description: `Honest solo-developer MVP estimate. Publication requires ${PIPELINE.minimumMvpBuildWeeks} to ${PIPELINE.maximumMvpBuildWeeks} weeks.`,
+              },
+              recurring_trigger: {
+                type: "string",
+                description:
+                  "A concrete event or workflow that repeatedly causes the customer to return.",
+              },
+              latam_fit: {
+                type: "string",
+                enum: IDEA_LATAM_FITS,
+                description:
+                  "A soft market/design fit classification, not evidence unless supplied posts explicitly support it.",
+              },
+              latam_rationale: {
+                type: "string",
+                description:
+                  "Why LATAM is or is not a plausible wedge without relying on translation as the product.",
+              },
+            },
+            required: [
+              "archetype",
+              "core_action",
+              "value_mechanisms",
+              "delivery_mode",
+              "sales_motion",
+              "business_model",
+              "mvp_scope",
+              "mvp_build_weeks",
+              "recurring_trigger",
+              "latam_fit",
+              "latam_rationale",
+            ],
+          },
+          hard_filter_checks: {
+            type: "object",
+            additionalProperties: false,
+            properties: Object.fromEntries(
+              IDEA_HARD_FILTER_CHECKS.map((name) => [
+                name,
+                {
+                  type: "boolean",
+                  description:
+                    "True only when the candidate itself satisfies this hard publication rule.",
+                },
+              ]),
+            ),
+            required: IDEA_HARD_FILTER_CHECKS,
+          },
           risks: {
             type: "array",
             minItems: 1,
@@ -81,6 +180,8 @@ export const ideaGenerationSchema = {
           "differentiation",
           "speed_to_first_revenue",
           "validation_plan",
+          "product_spec",
+          "hard_filter_checks",
           "risks",
           "assumptions",
           "evidence_score",

@@ -4,7 +4,10 @@ import { randomUUID } from "node:crypto";
 import { start } from "workflow/api";
 import { DEFAULT_PREFERENCES, DEFAULT_X_QUERY, PIPELINE } from "@/lib/config";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { getRecentSearchWindow } from "@/lib/x/search-posts";
+import {
+  getRecentSearchWindow,
+  normalizeFollowedUsernames,
+} from "@/lib/x/search-posts";
 import { dailyResearch } from "@/workflows/daily-research";
 
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
@@ -77,6 +80,9 @@ export function buildEffectiveSettings(settings) {
       PIPELINE.defaultAiInputLimit,
       25,
       PIPELINE.defaultAiInputLimit,
+    ),
+    followed_x_usernames: normalizeFollowedUsernames(
+      settings?.followed_x_usernames,
     ),
     preferences: {
       offer_bias:
@@ -170,7 +176,9 @@ async function expireStaleRuns(admin, ownerId, now) {
 async function loadEffectiveSettings(admin, ownerId) {
   const { data, error } = await admin
     .from("settings")
-    .select("x_query, candidate_limit, ai_input_limit, preferences")
+    .select(
+      "x_query, candidate_limit, ai_input_limit, followed_x_usernames, preferences",
+    )
     .eq("owner_id", ownerId)
     .maybeSingle();
 

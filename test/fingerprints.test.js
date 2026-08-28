@@ -65,3 +65,19 @@ test("uses explicit delivery and pricing fields when supplied", () => {
     "law firms | document verification | review setup | onsite workshop | fixed fee",
   );
 });
+
+test("uses the structured product action and business model in new idea fingerprints", () => {
+  assert.equal(
+    buildIdeaFingerprint({
+      target_customer: "LATAM marketplace sellers",
+      problem: "Product videos take hours to assemble",
+      offer: "A browser-based product-video generator",
+      initial_price: "$39/month",
+      product_spec: {
+        core_action: "Turn a catalog URL into a publish-ready campaign",
+        business_model: "usage_based",
+      },
+    }),
+    "latam marketplace sellers | product videos take hours to assemble | a browserbased productvideo generator | turn a catalog url into a publishready campaign | usage based",
+  );
+});

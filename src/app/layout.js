@@ -17,7 +17,7 @@ export const metadata = {
     default: "Signal Foundry",
     template: "%s · Signal Foundry",
   },
-  description: "Evidence-backed business opportunities from AI discussions on X.",
+  description: "Evidence-backed self-serve AI website opportunities from discussions on X.",
 };
 
 export default function RootLayout({ children }) {

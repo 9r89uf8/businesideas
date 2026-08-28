@@ -1,15 +1,25 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import {
+  buildRecoveryRedirectUrl,
+  normalizeAuthEmail,
+} from "@/lib/auth-helpers";
 import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
 
+const EMPTY_STATE = { status: "idle", message: "" };
+
 export default function LoginPage() {
+  const emailInputRef = useRef(null);
   const [email, setEmail] = useState("");
-  const [state, setState] = useState({ status: "idle", message: "" });
+  const [password, setPassword] = useState("");
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [state, setState] = useState(EMPTY_STATE);
 
   useEffect(() => {
     const error = new URL(window.location.href).searchParams.get("error");
     if (error) {
+      setRecoveryOpen(true);
       setState({
         status: "error",
         message: "That sign-in link could not be verified. Request a fresh link.",
@@ -17,14 +27,82 @@ export default function LoginPage() {
     }
   }, []);
 
-  async function requestMagicLink(event) {
+  async function signInWithPassword(event) {
     event.preventDefault();
-    setState({ status: "loading", message: "" });
+    const formData = new FormData(event.currentTarget);
+    const normalizedEmail = normalizeAuthEmail(formData.get("email"));
+    const submittedPassword = formData.get("password");
 
+    if (
+      !normalizedEmail ||
+      typeof submittedPassword !== "string" ||
+      !submittedPassword
+    ) {
+      setState({
+        status: "error",
+        message: "Enter the owner email and password.",
+      });
+      return;
+    }
+
+    setState({ status: "signing_in", message: "" });
+    const supabase = createSupabaseBrowserClient();
+    const { error } = await supabase.auth.signInWithPassword({
+      email: normalizedEmail,
+      password: submittedPassword,
+    });
+
+    if (error) {
+      setState({
+        status: "error",
+        message: "The email or password was not accepted.",
+      });
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/auth/owner-session", {
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        await supabase.auth.signOut({ scope: "local" });
+        setState({
+          status: "error",
+          message: "This account is not authorized for this private site.",
+        });
+        return;
+      }
+    } catch {
+      await supabase.auth.signOut({ scope: "local" });
+      setState({
+        status: "error",
+        message: "Owner access could not be verified. Try again.",
+      });
+      return;
+    }
+
+    window.location.replace("/");
+  }
+
+  async function requestMagicLink() {
+    const normalizedEmail = normalizeAuthEmail(
+      emailInputRef.current?.value || email,
+    );
+
+    if (!normalizedEmail) {
+      setState({
+        status: "error",
+        message: "Enter the owner email above first.",
+      });
+      return;
+    }
+
+    setState({ status: "sending_link", message: "" });
     const { error } = await createSupabaseBrowserClient().auth.signInWithOtp({
-      email: email.trim(),
+      email: normalizedEmail,
       options: {
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
+        emailRedirectTo: buildRecoveryRedirectUrl(window.location.origin),
         shouldCreateUser: false,
       },
     });
@@ -32,16 +110,20 @@ export default function LoginPage() {
     if (error) {
       setState({
         status: "error",
-        message: "A link could not be sent. Confirm the owner email and try again.",
+        message: "A sign-in link could not be sent. Confirm the owner email and try again.",
       });
       return;
     }
 
+    setPassword("");
     setState({
       status: "sent",
-      message: "Check your inbox. The link expires shortly and can be used once.",
+      message: "Check your inbox. The one-time link opens Settings so you can set a password.",
     });
   }
+
+  const busy =
+    state.status === "signing_in" || state.status === "sending_link";
 
   return (
     <main className="relative grid min-h-screen overflow-hidden lg:grid-cols-[1.05fr_0.95fr]">
@@ -95,31 +177,77 @@ export default function LoginPage() {
           <p className="eyebrow">Owner access</p>
           <h2 className="mt-3 text-3xl font-semibold tracking-[-0.04em]">Welcome back.</h2>
           <p className="mt-3 text-sm leading-6 text-[var(--ink-soft)]">
-            Enter the configured owner email. We’ll send a password-free sign-in link.
+            Sign in directly. Your browser or password manager can remember these details for next time.
           </p>
 
-          <form onSubmit={requestMagicLink} className="mt-9">
+          <form onSubmit={signInWithPassword} className="mt-9">
             <label htmlFor="email" className="text-xs font-bold text-[var(--ink)]">Email address</label>
             <input
               id="email"
+              ref={emailInputRef}
               name="email"
               type="email"
-              autoComplete="email"
+              autoComplete="username"
+              inputMode="email"
               required
               value={email}
               onChange={(event) => setEmail(event.target.value)}
               placeholder="you@example.com"
               className="focus-ring mt-2 w-full rounded-xl border border-[var(--line)] bg-white/80 px-4 py-3.5 text-sm shadow-sm outline-none placeholder:text-[var(--ink-soft)]/45"
             />
+
+            <label htmlFor="password" className="mt-5 block text-xs font-bold text-[var(--ink)]">Password</label>
+            <input
+              id="password"
+              name="password"
+              type="password"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              className="focus-ring mt-2 w-full rounded-xl border border-[var(--line)] bg-white/80 px-4 py-3.5 text-sm shadow-sm outline-none"
+            />
+
             <button
               type="submit"
-              disabled={state.status === "loading" || !email.trim()}
+              disabled={busy}
               className="focus-ring mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--ink)] px-4 py-3.5 text-sm font-bold text-white shadow-sm transition-transform hover:-translate-y-0.5 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {state.status === "loading" ? "Sending link…" : "Email me a sign-in link"}
-              {state.status !== "loading" && <span aria-hidden="true">→</span>}
+              {state.status === "signing_in" ? "Signing in…" : "Sign in"}
+              {state.status !== "signing_in" && <span aria-hidden="true">→</span>}
             </button>
           </form>
+
+          <div className="mt-6 border-t border-[var(--line)] pt-5">
+            <button
+              type="button"
+              aria-expanded={recoveryOpen}
+              aria-controls="recovery-options"
+              onClick={() => {
+                setRecoveryOpen((open) => !open);
+                setState(EMPTY_STATE);
+              }}
+              className="focus-ring rounded-md text-sm font-semibold text-[var(--moss)] underline decoration-[var(--moss)]/35 underline-offset-4"
+            >
+              {recoveryOpen ? "Hide email-link option" : "No password yet or forgot it?"}
+            </button>
+
+            {recoveryOpen && (
+              <div id="recovery-options" className="mt-4 rounded-xl border border-[var(--line)] bg-white/55 p-4">
+                <p className="text-xs leading-5 text-[var(--ink-soft)]">
+                  Use the email entered above. The one-time link signs you in and opens the password section in Settings.
+                </p>
+                <button
+                  type="button"
+                  onClick={requestMagicLink}
+                  disabled={busy}
+                  className="focus-ring mt-3 w-full rounded-lg border border-[var(--ink)]/20 bg-white px-4 py-3 text-sm font-bold text-[var(--ink)] shadow-sm transition-colors hover:border-[var(--moss)]/45 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {state.status === "sending_link" ? "Sending link…" : "Email a one-time sign-in link"}
+                </button>
+              </div>
+            )}
+          </div>
 
           {state.message && (
             <p
@@ -135,7 +263,7 @@ export default function LoginPage() {
           )}
 
           <p className="mt-8 border-t border-[var(--line)] pt-5 text-xs leading-5 text-[var(--ink-soft)]">
-            Access is restricted to one Supabase user ID. Other accounts are rejected even if they obtain a valid session.
+            Access is restricted to one Supabase user ID. Any other authenticated account is signed out automatically.
           </p>
         </div>
       </section>

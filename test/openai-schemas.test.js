@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { PIPELINE } from "../src/lib/config.js";
+import {
+  IDEA_DELIVERY_MODES,
+  IDEA_HARD_FILTER_CHECKS,
+  IDEA_PRODUCT_ARCHETYPES,
+  IDEA_VALUE_MECHANISMS,
+  PIPELINE,
+} from "../src/lib/config.js";
 import { clusterGenerationSchema } from "../src/lib/ai-schemas/cluster-generation.js";
 import { ideaGenerationSchema } from "../src/lib/ai-schemas/idea-generation.js";
 import { signalExtractionSchema } from "../src/lib/ai-schemas/signal-extraction.js";
@@ -90,4 +96,45 @@ test("idea schema permits zero to five complete Sol candidates", () => {
   assert.ok(idea.required.includes("risks"));
   assert.ok(idea.required.includes("assumptions"));
   assert.ok(!Object.hasOwn(idea.properties, "confidence"));
+});
+
+test("idea schema makes the self-serve product contract explicit", () => {
+  const idea = ideaGenerationSchema.properties.ideas.items;
+  const productSpec = idea.properties.product_spec;
+  const hardChecks = idea.properties.hard_filter_checks;
+
+  assert.ok(idea.required.includes("product_spec"));
+  assert.ok(idea.required.includes("hard_filter_checks"));
+  assert.deepEqual(
+    productSpec.properties.archetype.enum,
+    IDEA_PRODUCT_ARCHETYPES,
+  );
+  assert.deepEqual(
+    productSpec.properties.value_mechanisms.items.enum,
+    IDEA_VALUE_MECHANISMS,
+  );
+  assert.deepEqual(
+    productSpec.properties.delivery_mode.enum,
+    IDEA_DELIVERY_MODES,
+  );
+  assert.equal(
+    productSpec.properties.mvp_build_weeks.minimum,
+    1,
+  );
+  assert.ok(
+    productSpec.properties.mvp_build_weeks.maximum >
+      PIPELINE.maximumMvpBuildWeeks,
+  );
+  assert.match(
+    productSpec.properties.mvp_build_weeks.description,
+    new RegExp(
+      `${PIPELINE.minimumMvpBuildWeeks} to ${PIPELINE.maximumMvpBuildWeeks} weeks`,
+    ),
+  );
+  assert.deepEqual(hardChecks.required, IDEA_HARD_FILTER_CHECKS);
+  assert.ok(
+    IDEA_HARD_FILTER_CHECKS.every(
+      (name) => hardChecks.properties[name].type === "boolean",
+    ),
+  );
 });

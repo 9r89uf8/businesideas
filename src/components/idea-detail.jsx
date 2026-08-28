@@ -25,6 +25,53 @@ function List({ items }) {
   );
 }
 
+function humanize(value) {
+  return typeof value === "string"
+    ? value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase())
+    : "Not specified";
+}
+
+function ProductContract({ spec }) {
+  if (!spec?.core_action) return null;
+
+  return (
+    <section className="panel overflow-hidden">
+      <div className="border-b border-[var(--line)] bg-[var(--ink)] px-5 py-5 text-white sm:px-7">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="font-mono text-[0.68rem] font-bold uppercase tracking-[0.14em] text-[var(--moss-bright)]">Self-serve product contract</p>
+            <p className="mt-2 text-base leading-7">{spec.core_action}</p>
+          </div>
+          <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1.5 text-xs font-bold">
+            {spec.mvp_build_weeks}-week MVP
+          </span>
+        </div>
+      </div>
+      <div className="grid gap-7 p-5 sm:grid-cols-2 sm:p-7">
+        <Section label="Recurring reason to return">{spec.recurring_trigger}</Section>
+        <Section label="Business model">{humanize(spec.business_model)}</Section>
+        <Section label="Narrow MVP scope">{spec.mvp_scope}</Section>
+        <Section label="LATAM fit">
+          <span className="font-bold">{humanize(spec.latam_fit)}.</span> {spec.latam_rationale}
+        </Section>
+        <div className="sm:col-span-2">
+          <p className="eyebrow">Concrete customer advantage</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {(spec.value_mechanisms || []).map((mechanism) => (
+              <span key={mechanism} className="rounded-full bg-[var(--moss)]/8 px-3 py-1.5 text-xs font-bold text-[var(--moss)]">
+                {humanize(mechanism)}
+              </span>
+            ))}
+            <span className="rounded-full bg-[var(--amber)]/15 px-3 py-1.5 text-xs font-bold text-[#77521d]">
+              {humanize(spec.sales_motion)}
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function IdeaDetail({ idea, sources, feedback, evidenceNotice }) {
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start">
@@ -34,9 +81,11 @@ export default function IdeaDetail({ idea, sources, feedback, evidenceNotice }) 
             <Section label="Customer">{idea.target_customer}</Section>
             <Section label="Price assumption">{idea.initial_price || "Not specified"}</Section>
             <Section label="Observed problem">{idea.problem}</Section>
-            <Section label="Sellable first offer">{idea.offer}</Section>
+            <Section label={idea.product_spec?.core_action ? "Self-serve web product" : "Sellable first offer"}>{idea.offer}</Section>
           </div>
         </section>
+
+        <ProductContract spec={idea.product_spec} />
 
         <section className="panel p-5 sm:p-7">
           <div className="grid gap-7 sm:grid-cols-2">

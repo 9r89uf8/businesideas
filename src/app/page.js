@@ -99,7 +99,7 @@ export default async function DashboardPage() {
   if (lastSuccessfulRun?.id) {
     const { data: runIdeas, error: ideasError } = await supabase
       .from("ideas")
-      .select("id, rank, title, target_customer, problem, offer, evidence_score, status")
+      .select("id, rank, title, target_customer, problem, offer, product_spec, evidence_score, status")
       .eq("owner_id", ownerId)
       .eq("run_id", lastSuccessfulRun.id)
       .order("rank", { ascending: true });
@@ -144,7 +144,7 @@ export default async function DashboardPage() {
         <div>
           <p className="eyebrow">Today’s opportunity brief</p>
           <h1 className="mt-2 max-w-3xl text-4xl font-semibold tracking-[-0.055em] sm:text-5xl">
-            Commercial signals, distilled from the conversation.
+            Commercial signals, distilled into self-serve web products.
           </h1>
         </div>
         <div className="shrink-0 text-left sm:text-right">

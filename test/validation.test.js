@@ -7,6 +7,7 @@ import {
   validateSolResponse,
   validateTerraResponse,
 } from "../src/lib/validation.js";
+import { IDEA_HARD_FILTER_CHECKS } from "../src/lib/config.js";
 
 function lunaItem(postId, overrides = {}) {
   return {
@@ -50,6 +51,22 @@ function idea(title, sourceIds, overrides = {}) {
     differentiation: "narrow accounting workflow focus",
     speed_to_first_revenue: "one to three weeks",
     validation_plan: "Contact 20 owners and sell one pilot in seven days.",
+    product_spec: {
+      archetype: "specific_action_tool",
+      core_action: "Checks uploaded AI-generated work against a saved rubric.",
+      value_mechanisms: ["save_time", "save_money"],
+      delivery_mode: "self_serve_web_app",
+      sales_motion: "self_serve_checkout",
+      business_model: "subscription",
+      mvp_scope: "Upload, rubric checks, flagged output, and saved templates.",
+      mvp_build_weeks: 4,
+      recurring_trigger: "Every new client deliverable needs review.",
+      latam_fit: "none",
+      latam_rationale: "No credible region-specific wedge is supported.",
+    },
+    hard_filter_checks: Object.fromEntries(
+      IDEA_HARD_FILTER_CHECKS.map((name) => [name, true]),
+    ),
     risks: ["firms may use internal policies"],
     assumptions: ["owners can see informal AI use"],
     evidence_score: 80,
@@ -244,4 +261,75 @@ test("Sol caps publishable ideas by rank and requires a valid assessment", () =>
     () => validateSolResponse({ ideas: [] }, clusters, runPosts),
     /valid assessment/,
   );
+});
+
+test("Sol publication rejects weak or non-self-serve candidates without filler", () => {
+  const clusters = [cluster("Supplied", ["1", "2", "3"])];
+  const runPosts = [
+    { post_id: "1", author_id: "a" },
+    { post_id: "2", author_id: "b" },
+    { post_id: "3", author_id: "c" },
+  ];
+  const disqualified = idea("Disqualified", ["1", "2", "3"], {
+    evidence_score: 64,
+  });
+  disqualified.product_spec = {
+    ...disqualified.product_spec,
+    delivery_mode: "human_delivered_service",
+    sales_motion: "sales_call_required",
+    mvp_build_weeks: 7,
+  };
+  disqualified.hard_filter_checks = {
+    ...disqualified.hard_filter_checks,
+    no_translation: false,
+  };
+
+  const validated = validateSolResponse(
+    {
+      assessment: { overall_evidence: "weak", notes: "Support is thin." },
+      ideas: [disqualified],
+    },
+    clusters,
+    runPosts,
+  );
+
+  assert.equal(validated.ideas.length, 1);
+  assert.equal(validated.publishableIdeas.length, 0);
+  assert.deepEqual(validated.ideas[0].validation_errors, [
+    "weak_overall_evidence",
+    "weak_idea_evidence",
+    "not_self_serve_web_app",
+    "requires_sales_process",
+    "mvp_outside_2_to_6_weeks",
+    "hard_filter_failed:no_translation",
+  ]);
+});
+
+test("Sol discards candidates missing the structured product contract", () => {
+  const clusters = [cluster("Supplied", ["1", "2", "3"])];
+  const runPosts = [
+    { post_id: "1", author_id: "a" },
+    { post_id: "2", author_id: "b" },
+    { post_id: "3", author_id: "c" },
+  ];
+  const missingSpec = idea("Missing spec", ["1", "2", "3"]);
+  delete missingSpec.product_spec;
+  const missingChecks = idea("Missing checks", ["1", "2", "3"], {
+    rank: 2,
+  });
+  missingChecks.hard_filter_checks = {
+    website_deliverable: true,
+  };
+
+  const validated = validateSolResponse(
+    {
+      assessment: { overall_evidence: "strong", notes: "Enough evidence." },
+      ideas: [missingSpec, missingChecks],
+    },
+    clusters,
+    runPosts,
+  );
+
+  assert.deepEqual(validated.ideas, []);
+  assert.deepEqual(validated.publishableIdeas, []);
 });

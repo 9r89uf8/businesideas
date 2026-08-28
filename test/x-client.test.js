@@ -22,9 +22,14 @@ const {
   X_USER_FIELDS,
   xRequest,
 } = await import("../src/lib/x/client.js");
-const { getRecentSearchWindow, searchRecentPosts } = await import(
-  "../src/lib/x/search-posts.js"
-);
+const {
+  buildFollowedAccountsQuery,
+  getRecentSearchWindow,
+  isStrongFollowedPost,
+  normalizeFollowedUsernames,
+  searchHybridRecentPosts,
+  searchRecentPosts,
+} = await import("../src/lib/x/search-posts.js");
 const { lookupPosts } = await import("../src/lib/x/lookup-posts.js");
 
 const TEST_TOKEN = "test-bearer-token-that-must-never-leak";
@@ -160,6 +165,203 @@ test("getRecentSearchWindow keeps end_time 30 seconds behind X", () => {
       endTime: "2026-08-27T12:59:30Z",
     },
   );
+});
+
+test("followed usernames are safely normalized, deduplicated, and capped", () => {
+  const normalized = normalizeFollowedUsernames([
+    " @OpenAI ",
+    "openai",
+    "valid_user",
+    "bad-name OR AI",
+    null,
+    ...Array.from({ length: 20 }, (_, index) => `account_${index}`),
+  ]);
+
+  assert.equal(normalized[0], "openai");
+  assert.equal(normalized[1], "valid_user");
+  assert.equal(normalized.length, 12);
+  assert.equal(normalized.includes("bad-name or ai"), false);
+
+  const query = buildFollowedAccountsQuery(normalized);
+  const maximumLengthQuery = buildFollowedAccountsQuery(
+    Array.from(
+      { length: 12 },
+      (_, index) => `${String(index).padStart(2, "0")}${"a".repeat(13)}`,
+    ),
+  );
+  assert.ok(query.length <= 512);
+  assert.ok(maximumLengthQuery.length <= 512);
+  assert.match(query, /^\(AI OR/);
+  assert.match(query, /\(from:openai OR from:valid_user/);
+  assert.match(query, /-is:retweet$/);
+  assert.equal(buildFollowedAccountsQuery(["invalid handle!"]), null);
+});
+
+test("followed-account quality requires real engagement or discussion", () => {
+  const postWith = (publicMetrics) => ({ public_metrics: publicMetrics });
+
+  assert.equal(
+    isStrongFollowedPost(
+      postWith({
+        like_count: 1,
+        retweet_count: 0,
+        reply_count: 0,
+        quote_count: 0,
+      }),
+    ),
+    false,
+  );
+  assert.equal(
+    isStrongFollowedPost(
+      postWith({
+        like_count: 6,
+        retweet_count: 0,
+        reply_count: 3,
+        quote_count: 0,
+      }),
+    ),
+    true,
+  );
+  assert.equal(
+    isStrongFollowedPost(
+      postWith({
+        like_count: 0,
+        retweet_count: 20,
+        reply_count: 0,
+        quote_count: 0,
+      }),
+    ),
+    true,
+  );
+});
+
+test("hybrid search queries followed accounts first within one candidate budget", async () => {
+  const calls = [];
+  const followedIndexes = [1, 2, 3, 4, 5];
+  const topicIndexes = [5, 6, 7, 8, 9];
+
+  const result = await searchHybridRecentPosts({
+    query: "AI problem lang:en -is:retweet",
+    followedUsernames: ["OpenAI", "AnthropicAI"],
+    startTime: "2026-08-26T13:00:00Z",
+    endTime: "2026-08-27T13:00:00Z",
+    candidateLimit: 10,
+    aiInputLimit: 10,
+    fetchImpl: async (requestUrl) => {
+      const url = new URL(requestUrl);
+      const query = url.searchParams.get("query");
+      calls.push({
+        query,
+        maxResults: url.searchParams.get("max_results"),
+        startTime: url.searchParams.get("start_time"),
+        endTime: url.searchParams.get("end_time"),
+      });
+      const followed = query.includes("from:openai");
+      const indexes = followed ? followedIndexes : topicIndexes;
+      const posts = indexes.map(makePost);
+
+      if (followed) {
+        posts[0] = {
+          ...posts[0],
+          public_metrics: {
+            like_count: 1,
+            retweet_count: 0,
+            reply_count: 0,
+            quote_count: 0,
+          },
+        };
+      }
+
+      return jsonResponse({
+        data: posts,
+        includes: { users: indexes.map(makeUser) },
+        meta: { result_count: indexes.length },
+      });
+    },
+  });
+
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].query, /from:openai/);
+  assert.equal(calls[1].query, "AI problem lang:en -is:retweet");
+  assert.equal(calls[0].startTime, calls[1].startTime);
+  assert.equal(calls[0].endTime, calls[1].endTime);
+  assert.equal(result.meta.rawResultCount, 10);
+  assert.ok(result.meta.rawResultCount <= 10);
+  assert.equal(result.meta.followedReturned, 5);
+  assert.equal(result.meta.followedQualityPassed, 4);
+  assert.equal(result.meta.topicRequestedLimit, 5);
+  assert.equal(result.meta.topicReturned, 4);
+  assert.equal(result.meta.crossChannelDuplicates, 1);
+  assert.equal(result.posts.length, 9);
+  assert.equal(result.rankablePosts.length, 8);
+  assert.equal(result.posts[0].source_channel, "followed");
+  assert.equal(result.posts.at(-1).source_channel, "topic");
+  assert.equal(
+    result.rankablePosts.some((post) => post.id === "1001"),
+    false,
+  );
+});
+
+test("hybrid search gives topic discovery the full budget when followed accounts are quiet", async () => {
+  const calls = [];
+  const topicIndexes = Array.from({ length: 20 }, (_, index) => index + 1);
+
+  const result = await searchHybridRecentPosts({
+    query: "AI workaround lang:en -is:retweet",
+    followedUsernames: ["quiet_account"],
+    startTime: "2026-08-26T13:00:00Z",
+    endTime: "2026-08-27T13:00:00Z",
+    candidateLimit: 20,
+    aiInputLimit: 20,
+    fetchImpl: async (requestUrl) => {
+      const url = new URL(requestUrl);
+      const query = url.searchParams.get("query");
+      calls.push({ query, maxResults: url.searchParams.get("max_results") });
+
+      if (query.includes("from:quiet_account")) {
+        return jsonResponse({ meta: { result_count: 0 } });
+      }
+
+      return jsonResponse({
+        data: topicIndexes.map(makePost),
+        includes: { users: topicIndexes.map(makeUser) },
+        meta: { result_count: topicIndexes.length },
+      });
+    },
+  });
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].maxResults, "10");
+  assert.equal(calls[1].maxResults, "20");
+  assert.equal(result.meta.followedReturned, 0);
+  assert.equal(result.meta.topicRequestedLimit, 20);
+  assert.equal(result.posts.length, 20);
+  assert.ok(result.posts.every((post) => post.source_channel === "topic"));
+});
+
+test("hybrid search preserves followed-request rate-limit failures", async () => {
+  let callCount = 0;
+
+  await assert.rejects(
+    searchHybridRecentPosts({
+      query: "AI problem lang:en -is:retweet",
+      followedUsernames: ["OpenAI"],
+      startTime: "2026-08-26T13:00:00Z",
+      endTime: "2026-08-27T13:00:00Z",
+      candidateLimit: 50,
+      aiInputLimit: 25,
+      fetchImpl: async () => {
+        callCount += 1;
+        return jsonResponse(
+          { title: "Too Many Requests" },
+          { status: 429, headers: { "retry-after": "5" } },
+        );
+      },
+    }),
+    (error) => error instanceof XApiError && error.isRateLimited,
+  );
+
+  assert.equal(callCount, 1);
 });
 
 test("searchRecentPosts requests two relevancy pages and normalizes IDs", async () => {

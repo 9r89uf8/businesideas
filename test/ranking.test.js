@@ -13,6 +13,7 @@ import {
   percentileRanks,
   rankPosts,
   resultPositionScore,
+  selectHybridAiInput,
   selectSignals,
   weightedEngagement,
 } from "../src/lib/ranking.js";
@@ -136,6 +137,48 @@ test("filters, deduplicates, ranks, and enforces three posts per author", () => 
     assert.ok(post.deterministic_score >= 0 && post.deterministic_score <= 1);
     assert.match(post.normalized_text_hash, /^[a-f0-9]{64}$/);
   }
+});
+
+test("hybrid AI selection caps followed posts at half without forcing a quota", () => {
+  const ranked = [
+    { id: "followed-1", source_channel: "followed" },
+    { id: "topic-1", source_channel: "topic" },
+    { id: "followed-2", source_channel: "followed" },
+    { id: "followed-3", source_channel: "followed" },
+    { id: "topic-2", source_channel: "topic" },
+    { id: "followed-4", source_channel: "followed" },
+    { id: "topic-3", source_channel: "topic" },
+    { id: "topic-4", source_channel: "topic" },
+  ];
+
+  const selected = selectHybridAiInput(ranked, { limit: 6 });
+  assert.deepEqual(
+    selected.map((post) => post.id),
+    [
+      "followed-1",
+      "topic-1",
+      "followed-2",
+      "followed-3",
+      "topic-2",
+      "topic-3",
+    ],
+  );
+  assert.equal(
+    selected.filter((post) => post.source_channel === "followed").length,
+    3,
+  );
+
+  const withoutForcedQuota = selectHybridAiInput(
+    ranked.filter((post) => post.id !== "followed-2" && post.id !== "followed-3" && post.id !== "followed-4"),
+    { limit: 6 },
+  );
+  assert.equal(
+    withoutForcedQuota.filter((post) => post.source_channel === "followed")
+      .length,
+    1,
+  );
+  assert.equal(withoutForcedQuota.length, 5);
+  assert.throws(() => selectHybridAiInput(null, { limit: 5 }), /array/);
 });
 
 test("calculates and selects opportunity signals deterministically", () => {

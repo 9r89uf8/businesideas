@@ -13,8 +13,15 @@ function sentence(value, fallback = "Not specified") {
   return value?.trim() || fallback;
 }
 
+function humanize(value) {
+  return typeof value === "string"
+    ? value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase())
+    : "";
+}
+
 export default function IdeaCard({ idea, compact = false }) {
   const sourceCount = idea.sourceCount ?? idea.idea_sources?.length ?? 0;
+  const productSpec = idea.product_spec && typeof idea.product_spec === "object" ? idea.product_spec : {};
 
   return (
     <article className="panel group flex h-full flex-col p-5 transition-transform hover:-translate-y-0.5 sm:p-6">
@@ -38,6 +45,13 @@ export default function IdeaCard({ idea, compact = false }) {
       <p className="mt-3 text-sm leading-6 text-[var(--ink-soft)]">
         {compact ? sentence(idea.problem) : sentence(idea.offer)}
       </p>
+
+      {productSpec.archetype && (
+        <div className="mt-4 flex flex-wrap gap-2 text-[0.66rem] font-bold text-[var(--ink-soft)]">
+          <span className="rounded-full bg-[var(--moss)]/8 px-2.5 py-1 text-[var(--moss)]">{humanize(productSpec.archetype)}</span>
+          {productSpec.mvp_build_weeks && <span className="rounded-full bg-black/5 px-2.5 py-1">{productSpec.mvp_build_weeks}-week MVP</span>}
+        </div>
+      )}
 
       <div className="mt-auto pt-6">
         <div className="mb-4 flex items-center justify-between border-t border-[var(--line)] pt-4 text-xs">

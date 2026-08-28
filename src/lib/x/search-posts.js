@@ -14,10 +14,18 @@ const MAX_PAGES = 2;
 const MAX_RESULTS_PER_PAGE = 100;
 const MAX_CANDIDATES = MAX_PAGES * MAX_RESULTS_PER_PAGE;
 const MIN_PARTIAL_RESULT_COUNT = 50;
+const MAX_FOLLOWED_USERNAMES = 12;
+const MIN_FOLLOWED_WEIGHTED_ENGAGEMENT = 12;
+const MIN_FOLLOWED_DISCUSSION_ACTIONS = 2;
+const STRONG_FOLLOWED_WEIGHTED_ENGAGEMENT = 30;
+const MAX_X_QUERY_LENGTH = 512;
 const RECENT_SEARCH_WINDOW_MS = 7 * 24 * 60 * 60 * 1_000;
 const FIRST_RUN_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const SUCCESSFUL_RUN_OVERLAP_MS = 2 * 60 * 60 * 1_000;
 const RECENT_SEARCH_SAFETY_LAG_MS = 30 * 1_000;
+const X_USERNAME_PATTERN = /^[a-zA-Z0-9_]{1,15}$/;
+const FOLLOWED_AI_QUERY =
+  '(AI OR "artificial intelligence" OR "generative AI" OR "inteligencia artificial" OR ChatGPT OR Claude OR Gemini OR "AI agent" OR "agente de IA" OR GenAI OR LLM)';
 
 function parseTime(value, label) {
   const date = value instanceof Date ? new Date(value.getTime()) : new Date(value);
@@ -89,6 +97,89 @@ function normalizeLimit(limit) {
   }
 
   return Math.min(limit, MAX_CANDIDATES);
+}
+
+function nonNegativeMetric(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+/**
+ * X usernames are case-insensitive and limited to 15 ASCII letters, numbers,
+ * or underscores. Invalid values are discarded so settings can never inject
+ * additional search operators into the followed-account query.
+ */
+export function normalizeFollowedUsernames(usernames) {
+  if (!Array.isArray(usernames)) {
+    return [];
+  }
+
+  const normalized = [];
+  const seen = new Set();
+
+  for (const value of usernames) {
+    const username =
+      typeof value === "string"
+        ? value.trim().replace(/^@+/, "").toLowerCase()
+        : "";
+
+    if (!X_USERNAME_PATTERN.test(username) || seen.has(username)) {
+      continue;
+    }
+
+    seen.add(username);
+    normalized.push(username);
+
+    if (normalized.length >= MAX_FOLLOWED_USERNAMES) {
+      break;
+    }
+  }
+
+  return normalized;
+}
+
+export function buildFollowedAccountsQuery(usernames) {
+  const normalized = normalizeFollowedUsernames(usernames);
+
+  if (normalized.length === 0) {
+    return null;
+  }
+
+  const authors = normalized
+    .map((username) => `from:${username}`)
+    .join(" OR ");
+
+  const query = `${FOLLOWED_AI_QUERY} (${authors}) -is:retweet`;
+
+  if (query.length > MAX_X_QUERY_LENGTH) {
+    throw new RangeError("The followed-account X query exceeds 512 characters.");
+  }
+
+  return query;
+}
+
+/**
+ * Followed accounts are a discovery preference, not a quality exemption.
+ * A post needs either meaningful discussion plus baseline engagement, or a
+ * stronger engagement total on its own. This prevents quiet/random posts from
+ * displacing topic-discovered evidence merely because their author was added.
+ */
+export function isStrongFollowedPost(post) {
+  const metrics = post?.public_metrics ?? post?.metrics ?? {};
+  const likes = nonNegativeMetric(metrics.like_count ?? metrics.likeCount);
+  const reposts = nonNegativeMetric(
+    metrics.retweet_count ?? metrics.retweetCount,
+  );
+  const replies = nonNegativeMetric(metrics.reply_count ?? metrics.replyCount);
+  const quotes = nonNegativeMetric(metrics.quote_count ?? metrics.quoteCount);
+  const weightedEngagement = likes + 1.5 * reposts + 2 * replies + 3 * quotes;
+  const discussionActions = replies + quotes;
+
+  return (
+    weightedEngagement >= STRONG_FOLLOWED_WEIGHTED_ENGAGEMENT ||
+    (weightedEngagement >= MIN_FOLLOWED_WEIGHTED_ENGAGEMENT &&
+      discussionActions >= MIN_FOLLOWED_DISCUSSION_ACTIONS)
+  );
 }
 
 function readPagePosts(payload) {
@@ -220,6 +311,111 @@ export async function searchRecentPosts({
       nextToken,
       windowStart: window.startTime,
       windowEnd: window.endTime,
+    },
+  };
+}
+
+/**
+ * Retrieves followed-account candidates first, then spends every remaining
+ * candidate slot on the editable topic query. The followed request is bounded
+ * by half the AI input size, so it cannot reduce topic discovery by more than
+ * the number of Luna slots it could actually occupy.
+ *
+ * `posts` contains every fetched candidate for inspection/storage.
+ * `rankablePosts` excludes followed posts that failed the engagement gate.
+ */
+export async function searchHybridRecentPosts({
+  query,
+  followedUsernames = [],
+  startTime,
+  previousWindowEnd,
+  endTime,
+  candidateLimit = MAX_CANDIDATES,
+  aiInputLimit = 100,
+  fetchImpl = globalThis.fetch,
+  signal,
+} = {}) {
+  const requestedCandidateLimit = normalizeLimit(candidateLimit);
+  const normalizedUsernames = normalizeFollowedUsernames(followedUsernames);
+  const normalizedAiInputLimit =
+    Number.isInteger(aiInputLimit) && aiInputLimit > 0
+      ? Math.min(aiInputLimit, requestedCandidateLimit)
+      : 0;
+  const followedRequestedLimit = Math.min(
+    Math.floor(normalizedAiInputLimit / 2),
+    Math.floor(requestedCandidateLimit / 2),
+  );
+  const followedQuery = buildFollowedAccountsQuery(normalizedUsernames);
+  let followedResult = null;
+
+  if (followedQuery && followedRequestedLimit > 0) {
+    followedResult = await searchRecentPosts({
+      query: followedQuery,
+      startTime,
+      previousWindowEnd,
+      endTime,
+      limit: followedRequestedLimit,
+      fetchImpl,
+      signal,
+    });
+  }
+
+  const followedPosts = (followedResult?.posts || []).map((post) => ({
+    ...post,
+    source_channel: "followed",
+  }));
+  const topicRequestedLimit = requestedCandidateLimit - followedPosts.length;
+  const topicResult = await searchRecentPosts({
+    query,
+    startTime,
+    previousWindowEnd,
+    endTime,
+    limit: topicRequestedLimit,
+    fetchImpl,
+    signal,
+  });
+  const followedIds = new Set(followedPosts.map((post) => post.id));
+  const topicPosts = topicResult.posts
+    .filter((post) => !followedIds.has(post.id))
+    .map((post) => ({
+      ...post,
+      source_channel: "topic",
+    }));
+  const followedQualityPosts = followedPosts.filter(isStrongFollowedPost);
+  const posts = [...followedPosts, ...topicPosts].slice(
+    0,
+    requestedCandidateLimit,
+  );
+  const retainedIds = new Set(posts.map((post) => post.id));
+  const rankablePosts = [
+    ...followedQualityPosts,
+    ...topicPosts,
+  ].filter((post) => retainedIds.has(post.id));
+
+  return {
+    posts,
+    rankablePosts,
+    partial: Boolean(followedResult?.partial || topicResult.partial),
+    partialError: followedResult?.partialError || topicResult.partialError,
+    meta: {
+      resultCount: posts.length,
+      rawResultCount:
+        followedPosts.length + topicResult.posts.length,
+      requestedLimit: requestedCandidateLimit,
+      windowStart:
+        followedResult?.meta.windowStart || topicResult.meta.windowStart,
+      windowEnd: followedResult?.meta.windowEnd || topicResult.meta.windowEnd,
+      followedAccountsConfigured: normalizedUsernames.length,
+      followedRequestedLimit: followedQuery ? followedRequestedLimit : 0,
+      followedReturned: followedPosts.length,
+      followedQualityPassed: followedQualityPosts.length,
+      topicRequestedLimit,
+      topicReturned: topicPosts.length,
+      crossChannelDuplicates:
+        topicResult.posts.length - topicPosts.length,
+      pagesFetched:
+        (followedResult?.meta.pagesFetched || 0) +
+        topicResult.meta.pagesFetched,
     },
   };
 }

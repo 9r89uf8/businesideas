@@ -1,4 +1,13 @@
-import { PIPELINE } from "./config.js";
+import {
+  IDEA_BUSINESS_MODELS,
+  IDEA_DELIVERY_MODES,
+  IDEA_HARD_FILTER_CHECKS,
+  IDEA_LATAM_FITS,
+  IDEA_PRODUCT_ARCHETYPES,
+  IDEA_SALES_MOTIONS,
+  IDEA_VALUE_MECHANISMS,
+  PIPELINE,
+} from "./config.js";
 
 const SIGNAL_TYPES = new Set([
   "pain",
@@ -15,6 +24,24 @@ const QUALIFYING_SIGNAL_TYPES = new Set([
   "request",
   "workaround",
   "spending",
+]);
+
+const OVERALL_EVIDENCE_VALUES = new Set([
+  "insufficient",
+  "weak",
+  "moderate",
+  "strong",
+]);
+const PUBLISHABLE_OVERALL_EVIDENCE = new Set(["moderate", "strong"]);
+const PRODUCT_ARCHETYPES = new Set(IDEA_PRODUCT_ARCHETYPES);
+const VALUE_MECHANISMS = new Set(IDEA_VALUE_MECHANISMS);
+const DELIVERY_MODES = new Set(IDEA_DELIVERY_MODES);
+const SALES_MOTIONS = new Set(IDEA_SALES_MOTIONS);
+const BUSINESS_MODELS = new Set(IDEA_BUSINESS_MODELS);
+const LATAM_FITS = new Set(IDEA_LATAM_FITS);
+const PUBLISHABLE_SALES_MOTIONS = new Set([
+  "self_serve_checkout",
+  "online_trial_then_self_serve",
 ]);
 
 const REQUIRED_IDEA_FIELDS = [
@@ -119,6 +146,59 @@ function cleanStringArray(values) {
   }
 
   return values.map((value) => value.trim());
+}
+
+function validProductSpec(productSpec) {
+  if (!productSpec || typeof productSpec !== "object") {
+    return false;
+  }
+
+  const valueMechanisms = cleanStringArray(productSpec.value_mechanisms);
+
+  return (
+    PRODUCT_ARCHETYPES.has(productSpec.archetype) &&
+    isNonEmptyString(productSpec.core_action) &&
+    valueMechanisms !== null &&
+    valueMechanisms.length >= 1 &&
+    valueMechanisms.length <= 3 &&
+    new Set(valueMechanisms).size === valueMechanisms.length &&
+    valueMechanisms.every((value) => VALUE_MECHANISMS.has(value)) &&
+    DELIVERY_MODES.has(productSpec.delivery_mode) &&
+    SALES_MOTIONS.has(productSpec.sales_motion) &&
+    BUSINESS_MODELS.has(productSpec.business_model) &&
+    isNonEmptyString(productSpec.mvp_scope) &&
+    Number.isInteger(productSpec.mvp_build_weeks) &&
+    productSpec.mvp_build_weeks > 0 &&
+    isNonEmptyString(productSpec.recurring_trigger) &&
+    LATAM_FITS.has(productSpec.latam_fit) &&
+    isNonEmptyString(productSpec.latam_rationale)
+  );
+}
+
+function validHardFilterChecks(checks) {
+  return (
+    checks &&
+    typeof checks === "object" &&
+    IDEA_HARD_FILTER_CHECKS.every(
+      (name) => typeof checks[name] === "boolean",
+    )
+  );
+}
+
+function cleanProductSpec(productSpec) {
+  return {
+    archetype: productSpec.archetype,
+    core_action: productSpec.core_action.trim(),
+    value_mechanisms: productSpec.value_mechanisms.map((value) => value.trim()),
+    delivery_mode: productSpec.delivery_mode,
+    sales_motion: productSpec.sales_motion,
+    business_model: productSpec.business_model,
+    mvp_scope: productSpec.mvp_scope.trim(),
+    mvp_build_weeks: productSpec.mvp_build_weeks,
+    recurring_trigger: productSpec.recurring_trigger.trim(),
+    latam_fit: productSpec.latam_fit,
+    latam_rationale: productSpec.latam_rationale.trim(),
+  };
 }
 
 function missingLunaItem(postId) {
@@ -350,6 +430,8 @@ function structurallyValidIdea(idea) {
     !Number.isInteger(idea.rank) ||
     idea.rank < 1 ||
     !isScore(idea.evidence_score) ||
+    !validProductSpec(idea.product_spec) ||
+    !validHardFilterChecks(idea.hard_filter_checks) ||
     REQUIRED_IDEA_FIELDS.some((key) => !isNonEmptyString(idea[key]))
   ) {
     return false;
@@ -364,7 +446,8 @@ function structurallyValidIdea(idea) {
 /**
  * `ideas` contains structurally valid candidates whose IDs are fully grounded
  * in the supplied clusters and current run. `publishableIdeas` additionally
- * meets the three-post/three-author evidence gate and is capped at three.
+ * meets the evidence, self-serve product, MVP, and hard-filter gates and is
+ * capped at three.
  */
 export function validateSolResponse(
   response,
@@ -382,7 +465,7 @@ export function validateSolResponse(
   if (
     !response.assessment ||
     typeof response.assessment !== "object" ||
-    !isNonEmptyString(response.assessment.overall_evidence) ||
+    !OVERALL_EVIDENCE_VALUES.has(response.assessment.overall_evidence) ||
     typeof response.assessment.notes !== "string"
   ) {
     throw new TypeError("Sol response must contain a valid assessment");
@@ -436,6 +519,39 @@ export function validateSolResponse(
       validationErrors.push("insufficient_authors");
     }
 
+    if (
+      !PUBLISHABLE_OVERALL_EVIDENCE.has(
+        response.assessment.overall_evidence,
+      )
+    ) {
+      validationErrors.push("weak_overall_evidence");
+    }
+
+    if (idea.evidence_score < PIPELINE.minimumIdeaEvidence) {
+      validationErrors.push("weak_idea_evidence");
+    }
+
+    if (idea.product_spec.delivery_mode !== "self_serve_web_app") {
+      validationErrors.push("not_self_serve_web_app");
+    }
+
+    if (!PUBLISHABLE_SALES_MOTIONS.has(idea.product_spec.sales_motion)) {
+      validationErrors.push("requires_sales_process");
+    }
+
+    if (
+      idea.product_spec.mvp_build_weeks < PIPELINE.minimumMvpBuildWeeks ||
+      idea.product_spec.mvp_build_weeks > PIPELINE.maximumMvpBuildWeeks
+    ) {
+      validationErrors.push("mvp_outside_2_to_6_weeks");
+    }
+
+    for (const check of IDEA_HARD_FILTER_CHECKS) {
+      if (!idea.hard_filter_checks[check]) {
+        validationErrors.push(`hard_filter_failed:${check}`);
+      }
+    }
+
     ideas.push({
       ...idea,
       ...Object.fromEntries(
@@ -443,6 +559,13 @@ export function validateSolResponse(
       ),
       risks: idea.risks.map((risk) => risk.trim()),
       assumptions: idea.assumptions.map((assumption) => assumption.trim()),
+      product_spec: cleanProductSpec(idea.product_spec),
+      hard_filter_checks: Object.fromEntries(
+        IDEA_HARD_FILTER_CHECKS.map((name) => [
+          name,
+          idea.hard_filter_checks[name],
+        ]),
+      ),
       source_post_ids: sourceIds,
       independent_author_count: independentAuthorCount,
       publishable: validationErrors.length === 0,

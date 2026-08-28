@@ -363,6 +363,34 @@ export function rankPosts(
   return selected;
 }
 
+/**
+ * Blends ranked discovery channels without treating followed accounts as a
+ * quota. Only rankable followed posts are supplied by the X search helper, and
+ * they may occupy at most half of the Luna input. Topic posts fill every other
+ * available slot while the returned order stays deterministic-score ordered.
+ */
+export function selectHybridAiInput(rankedPosts, { limit } = {}) {
+  if (!Array.isArray(rankedPosts)) {
+    throw new TypeError("rankedPosts must be an array");
+  }
+
+  const effectiveLimit = Number.isInteger(limit) && limit >= 0 ? limit : 0;
+
+  if (effectiveLimit === 0 || rankedPosts.length === 0) {
+    return [];
+  }
+
+  const followed = rankedPosts
+    .filter((post) => post?.source_channel === "followed")
+    .slice(0, Math.floor(effectiveLimit / 2));
+  const topic = rankedPosts
+    .filter((post) => post?.source_channel !== "followed")
+    .slice(0, effectiveLimit - followed.length);
+  const selected = new Set([...followed, ...topic]);
+
+  return rankedPosts.filter((post) => selected.has(post));
+}
+
 export function calculateOpportunityScore({
   deterministic_score,
   deterministicScore,

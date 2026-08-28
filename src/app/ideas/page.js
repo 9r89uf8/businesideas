@@ -21,7 +21,7 @@ export default async function IdeasPage({ searchParams }) {
 
   let ideasQuery = supabase
     .from("ideas")
-    .select("id, rank, title, target_customer, problem, offer, evidence_score, status, created_at", { count: "exact" })
+    .select("id, rank, title, target_customer, problem, offer, product_spec, evidence_score, status, created_at", { count: "exact" })
     .eq("owner_id", ownerId);
 
   if (status !== "all") ideasQuery = ideasQuery.eq("status", status);

@@ -67,6 +67,10 @@ export async function proxy(request) {
   const isPublic = pathname === "/login" || pathname.startsWith("/auth/");
   const isApi = pathname.startsWith("/api/");
 
+  if (userId && !isOwner) {
+    await supabase.auth.signOut({ scope: "local" });
+  }
+
   if (!isOwner && !isPublic && !isApi) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/login";

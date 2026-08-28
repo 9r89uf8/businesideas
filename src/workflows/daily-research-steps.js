@@ -32,6 +32,7 @@ import {
 import {
   calculateOpportunityScore,
   rankPosts,
+  selectHybridAiInput,
   selectSignals,
 } from "../lib/ranking.js";
 import { createSupabaseAdminClient } from "../lib/supabase/admin.js";
@@ -46,7 +47,7 @@ import {
   refreshRetainedEvidence,
   upsertCurrentPosts,
 } from "../lib/x/retention.js";
-import { searchRecentPosts } from "../lib/x/search-posts.js";
+import { searchHybridRecentPosts } from "../lib/x/search-posts.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TERMINAL_RUN_STATUSES = new Set(["completed", "no_ideas", "failed"]);
@@ -164,11 +165,13 @@ export async function fetchAndRank({ runId, ownerId }) {
   try {
     await purgeExpiredRawContent(db, ownerId, now);
     await refreshRetainedEvidence(db, ownerId, now);
-    searchResult = await searchRecentPosts({
+    searchResult = await searchHybridRecentPosts({
       query: run.settings_snapshot.x_query,
+      followedUsernames: run.settings_snapshot.followed_x_usernames,
       startTime: run.window_start,
       endTime: run.window_end,
-      limit: run.settings_snapshot.candidate_limit,
+      candidateLimit: run.settings_snapshot.candidate_limit,
+      aiInputLimit: run.settings_snapshot.ai_input_limit,
     });
   } catch (error) {
     retryXRateLimit(error);
@@ -182,10 +185,10 @@ export async function fetchAndRank({ runId, ownerId }) {
 
   const { error: clearError } = await db
     .from("run_posts")
-    .update({ selected_for_ai: false, deterministic_score: null })
+    .delete()
     .eq("run_id", runId)
     .eq("owner_id", ownerId);
-  throwDatabaseError(clearError, "resetting prior candidate selections");
+  throwDatabaseError(clearError, "clearing a prior candidate snapshot");
 
   if (posts.length) {
     const { error: snapshotError } = await db
@@ -196,15 +199,18 @@ export async function fetchAndRank({ runId, ownerId }) {
         owner_id: ownerId,
         search_position: post.search_position,
         metrics: post.public_metrics,
-    })), { onConflict: "run_id,post_id", ignoreDuplicates: false });
+        source_channel: post.source_channel,
+      })), { onConflict: "run_id,post_id", ignoreDuplicates: false });
     throwDatabaseError(snapshotError, "saving candidate metrics");
   }
 
-  const ranked = rankPosts(posts, {
+  const ranked = rankPosts(searchResult.rankablePosts, {
     now: run.window_end,
     limit: run.settings_snapshot.candidate_limit,
   });
-  const selected = ranked.slice(0, run.settings_snapshot.ai_input_limit);
+  const selected = selectHybridAiInput(ranked, {
+    limit: run.settings_snapshot.ai_input_limit,
+  });
 
   if (selected.length) {
     const { error: rankingError } = await db
@@ -215,17 +221,31 @@ export async function fetchAndRank({ runId, ownerId }) {
         owner_id: ownerId,
         search_position: post.search_position,
         metrics: post.public_metrics,
+        source_channel: post.source_channel,
         deterministic_score: post.deterministic_score,
         selected_for_ai: true,
-    })), { onConflict: "run_id,post_id", ignoreDuplicates: false });
+      })), { onConflict: "run_id,post_id", ignoreDuplicates: false });
     throwDatabaseError(rankingError, "saving deterministic rankings");
   }
 
   const counts = {
     ...(run.counts || {}),
     x_returned: posts.length,
+    x_raw_returned: searchResult.meta.rawResultCount,
+    x_followed_accounts_configured:
+      searchResult.meta.followedAccountsConfigured,
+    x_followed_returned: searchResult.meta.followedReturned,
+    x_followed_quality_passed: searchResult.meta.followedQualityPassed,
+    x_topic_returned: searchResult.meta.topicReturned,
+    x_cross_channel_duplicates: searchResult.meta.crossChannelDuplicates,
     after_filtering: ranked.length,
     sent_to_luna: selected.length,
+    sent_to_luna_followed: selected.filter(
+      (post) => post.source_channel === "followed",
+    ).length,
+    sent_to_luna_topic: selected.filter(
+      (post) => post.source_channel === "topic",
+    ).length,
     x_partial: searchResult.partial,
   };
 
@@ -690,6 +710,8 @@ export async function generateDeduplicateAndSave({ runId, ownerId, clusterIds })
       differentiation: idea.differentiation,
       speed_to_first_revenue: idea.speed_to_first_revenue,
       validation_plan: idea.validation_plan,
+      product_spec: idea.product_spec,
+      hard_filter_checks: idea.hard_filter_checks,
       risks: idea.risks,
       assumptions: idea.assumptions,
       evidence_score: idea.evidence_score,
@@ -708,7 +730,7 @@ export async function generateDeduplicateAndSave({ runId, ownerId, clusterIds })
       };
     });
   });
-  const { data: published, error: publishError } = await db.rpc("publish_run_ideas", {
+  const { data: published, error: publishError } = await db.rpc("publish_run_product_ideas", {
     p_owner_id: ownerId,
     p_run_id: runId,
     p_ideas: ideaPayload,

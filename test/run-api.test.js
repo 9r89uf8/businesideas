@@ -170,12 +170,19 @@ test("buildEffectiveSettings applies safe defaults and operating caps", () => {
   assert.equal(defaults.candidate_limit, 200);
   assert.equal(defaults.ai_input_limit, 100);
   assert.match(defaults.x_query, /lang:en -is:retweet/);
+  assert.deepEqual(defaults.followed_x_usernames, []);
   assert.ok(defaults.preferences.preferred_customers.length > 0);
 
   const customized = buildEffectiveSettings({
     x_query: "  AI workaround lang:en  ",
     candidate_limit: 500,
     ai_input_limit: 175,
+    followed_x_usernames: [
+      " @OpenAI ",
+      "openai",
+      "AnthropicAI",
+      "bad handle OR AI",
+    ],
     preferences: {
       offer_bias: "  software_first ",
       preferred_customers: [],
@@ -188,6 +195,10 @@ test("buildEffectiveSettings applies safe defaults and operating caps", () => {
   assert.equal(customized.x_query, "AI workaround lang:en");
   assert.equal(customized.candidate_limit, 200);
   assert.equal(customized.ai_input_limit, 100);
+  assert.deepEqual(customized.followed_x_usernames, [
+    "openai",
+    "anthropicai",
+  ]);
   assert.equal(customized.preferences.offer_bias, "software_first");
   assert.deepEqual(customized.preferences.preferred_customers, []);
   assert.deepEqual(customized.preferences.preferred_business_models, [

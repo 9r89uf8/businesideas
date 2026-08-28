@@ -24,6 +24,13 @@ const migration = readFileSync(
   new URL("../supabase/migrations/001_initial_schema.sql", import.meta.url),
   "utf8",
 );
+const additiveMigration = readFileSync(
+  new URL(
+    "../supabase/migrations/002_hybrid_sources_and_product_contract.sql",
+    import.meta.url,
+  ),
+  "utf8",
+);
 const workflowSource = readFileSync(
   new URL("../src/workflows/daily-research-steps.js", import.meta.url),
   "utf8",
@@ -171,4 +178,31 @@ test("final publication rejects null idea or source arrays before array access",
   assert.ok(nullGuardIndex >= 0);
   assert.match(block, /or p_sources is null/i);
   assert.ok(nullGuardIndex < arrayLengthIndex);
+});
+
+test("product publication validates and persists the structured hard-gate contract atomically", () => {
+  assert.match(workflowSource, /db\.rpc\(\s*"publish_run_product_ideas"/);
+  assert.match(workflowSource, /product_spec: idea\.product_spec/);
+  assert.match(workflowSource, /hard_filter_checks: idea\.hard_filter_checks/);
+
+  assert.match(additiveMigration, /create or replace function public\.publish_run_product_ideas/i);
+  assert.match(additiveMigration, /delivery_mode}', ''\) <> 'self_serve_web_app'/i);
+  assert.match(additiveMigration, /mvp_build_weeks}', ''\) !~ '\^\[2-6\]\$'/i);
+  assert.match(additiveMigration, /no_custom_implementation/i);
+  assert.match(additiveMigration, /from public\.publish_run_ideas/i);
+  assert.match(additiveMigration, /set product_spec = item -> 'product_spec'/i);
+  assert.match(additiveMigration, /hard_filter_checks = item -> 'hard_filter_checks'/i);
+  assert.match(additiveMigration, /from public, anon, authenticated/i);
+  assert.match(additiveMigration, /to service_role/i);
+});
+
+test("fetch retries replace the candidate snapshot instead of leaking stale source-feed rows", () => {
+  const fetchStart = workflowSource.indexOf("export async function fetchAndRank");
+  const extractionStart = workflowSource.indexOf("export async function extractSignals");
+  const fetchBlock = workflowSource.slice(fetchStart, extractionStart);
+  const deleteIndex = fetchBlock.indexOf('.from("run_posts")\n    .delete()');
+  const candidateUpsertIndex = fetchBlock.indexOf('.from("run_posts")\n      .upsert');
+
+  assert.ok(deleteIndex >= 0);
+  assert.ok(candidateUpsertIndex > deleteIndex);
 });

@@ -22,7 +22,7 @@ export default async function IdeaDetailPage({ params }) {
   const { ownerId, supabase } = await requireOwner();
   const { data: idea, error } = await supabase
     .from("ideas")
-    .select("id, run_id, rank, title, target_customer, problem, offer, why_pay, why_now, initial_price, differentiation, speed_to_first_revenue, validation_plan, risks, assumptions, evidence_score, status, feedback_reason, feedback_note")
+    .select("id, run_id, rank, title, target_customer, problem, offer, why_pay, why_now, initial_price, differentiation, speed_to_first_revenue, validation_plan, product_spec, hard_filter_checks, risks, assumptions, evidence_score, status, feedback_reason, feedback_note")
     .eq("owner_id", ownerId)
     .eq("id", id)
     .maybeSingle();
@@ -97,6 +97,8 @@ export default async function IdeaDetailPage({ params }) {
     differentiation: idea.differentiation,
     speed_to_first_revenue: idea.speed_to_first_revenue,
     validation_plan: idea.validation_plan,
+    product_spec: idea.product_spec,
+    hard_filter_checks: idea.hard_filter_checks,
     risks: idea.risks,
     assumptions: idea.assumptions,
   };

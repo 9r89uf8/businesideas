@@ -31,10 +31,16 @@ export function buildClusterFingerprint(cluster) {
 
 export function buildIdeaFingerprint(idea) {
   const offer = field(idea, "offer", "offer");
+  const productSpec = idea?.product_spec && typeof idea.product_spec === "object"
+    ? idea.product_spec
+    : {};
   const deliveryMechanism =
-    field(idea, "delivery_mechanism", "deliveryMechanism") || offer;
+    field(idea, "delivery_mechanism", "deliveryMechanism") ||
+    field(productSpec, "core_action", "coreAction") ||
+    offer;
   const pricingModel =
     field(idea, "pricing_model", "pricingModel") ||
+    field(productSpec, "business_model", "businessModel").replaceAll("_", " ") ||
     field(idea, "initial_price", "initialPrice");
 
   return fingerprintFromParts([

@@ -11,6 +11,10 @@ create table public.settings (
 
   x_query text not null,
 
+  followed_x_usernames text[] not null default '{}'
+    constraint settings_followed_x_usernames_limit
+    check (cardinality(followed_x_usernames) <= 12),
+
   candidate_limit integer not null default 200
     check (candidate_limit between 50 and 500),
 
@@ -19,11 +23,28 @@ create table public.settings (
 
   preferences jsonb not null default
     '{
-      "offer_bias": "services_first",
-      "preferred_customers": [],
-      "preferred_business_models": [],
-      "avoid": [],
-      "personal_advantages": []
+      "offer_bias": "self_serve_web_products_first",
+      "preferred_customers": [
+        "solo operators and remote workers",
+        "small businesses",
+        "professional service firms",
+        "LATAM entrepreneurs and small businesses"
+      ],
+      "preferred_business_models": [
+        "self-serve SaaS",
+        "usage-based web app",
+        "transaction-fee marketplace",
+        "paid data subscription"
+      ],
+      "avoid": [
+        "hardware",
+        "healthcare, therapy, or medical-adjacent products",
+        "consulting, agencies, audits, workshops, or custom implementation",
+        "enterprise products with long sales cycles",
+        "translation products",
+        "generic chatbots or synthetic companions"
+      ],
+      "personal_advantages": ["software development", "AI automation"]
     }'::jsonb,
 
   updated_at timestamptz not null default now()
@@ -138,6 +159,9 @@ create table public.run_posts (
 
   deterministic_score real,
   selected_for_ai boolean not null default false,
+  source_channel text not null default 'topic'
+    constraint run_posts_source_channel_check
+    check (source_channel in ('followed', 'topic')),
 
   relevant boolean,
   signal_type text
@@ -242,6 +266,13 @@ create table public.ideas (
   differentiation text,
   speed_to_first_revenue text,
   validation_plan text not null,
+
+  product_spec jsonb not null default '{}'
+    constraint ideas_product_spec_object_check
+    check (jsonb_typeof(product_spec) = 'object'),
+  hard_filter_checks jsonb not null default '{}'
+    constraint ideas_hard_filter_checks_object_check
+    check (jsonb_typeof(hard_filter_checks) = 'object'),
 
   risks text[] not null default '{}',
   assumptions text[] not null default '{}',
@@ -937,6 +968,67 @@ begin
 
   for item in select value from jsonb_array_elements(p_ideas)
   loop
+    if jsonb_typeof(item -> 'product_spec') is distinct from 'object'
+      or coalesce(btrim(item #>> '{product_spec,archetype}'), '') = ''
+      or coalesce(btrim(item #>> '{product_spec,core_action}'), '') = ''
+      or coalesce(item #>> '{product_spec,delivery_mode}', '') <> 'self_serve_web_app'
+      or coalesce(item #>> '{product_spec,sales_motion}', '') not in (
+        'self_serve_checkout',
+        'online_trial_then_self_serve'
+      )
+      or coalesce(btrim(item #>> '{product_spec,business_model}'), '') = ''
+      or coalesce(btrim(item #>> '{product_spec,mvp_scope}'), '') = ''
+      or coalesce(item #>> '{product_spec,mvp_build_weeks}', '') !~ '^[2-6]$'
+      or coalesce(btrim(item #>> '{product_spec,recurring_trigger}'), '') = ''
+      or coalesce(btrim(item #>> '{product_spec,latam_fit}'), '') = ''
+      or coalesce(btrim(item #>> '{product_spec,latam_rationale}'), '') = ''
+    then
+      raise exception 'Idea failed the self-serve product contract.' using errcode = '23514';
+    end if;
+
+    if jsonb_typeof(item #> '{product_spec,value_mechanisms}') is distinct from 'array'
+    then
+      raise exception 'Idea requires a concrete value mechanism.' using errcode = '23514';
+    end if;
+
+    if jsonb_array_length(item #> '{product_spec,value_mechanisms}') not between 1 and 3
+    then
+      raise exception 'Idea requires a concrete value mechanism.' using errcode = '23514';
+    end if;
+
+    if jsonb_typeof(item -> 'hard_filter_checks') is distinct from 'object'
+    then
+      raise exception 'Idea hard-filter checks are missing.' using errcode = '23514';
+    end if;
+
+    if not ((item -> 'hard_filter_checks') ?& array[
+      'website_deliverable',
+      'self_serve_without_call',
+      'solo_mvp_feasible',
+      'recurring_use',
+      'creates_allowed_value',
+      'specific_action_not_chat',
+      'no_hardware',
+      'no_healthcare_therapy_or_medical',
+      'no_consulting_agency_audit_or_workshop',
+      'no_custom_implementation',
+      'no_enterprise_sales',
+      'no_translation',
+      'no_generic_chat_or_companion'
+    ]) or exists (
+      select 1
+      from jsonb_each(item -> 'hard_filter_checks') as hard_filter(name, passed)
+      where passed is distinct from 'true'::jsonb
+    )
+    then
+      raise exception 'Idea failed a hard publication filter.' using errcode = '23514';
+    end if;
+
+    if (item ->> 'evidence_score')::integer < 65
+    then
+      raise exception 'Idea evidence is too weak to publish.' using errcode = '23514';
+    end if;
+
     insert into public.ideas (
       run_id,
       owner_id,
@@ -951,6 +1043,8 @@ begin
       differentiation,
       speed_to_first_revenue,
       validation_plan,
+      product_spec,
+      hard_filter_checks,
       risks,
       assumptions,
       evidence_score,
@@ -972,6 +1066,8 @@ begin
       nullif(item ->> 'differentiation', ''),
       nullif(item ->> 'speed_to_first_revenue', ''),
       item ->> 'validation_plan',
+      item -> 'product_spec',
+      item -> 'hard_filter_checks',
       array(select jsonb_array_elements_text(item -> 'risks')),
       array(select jsonb_array_elements_text(item -> 'assumptions')),
       (item ->> 'evidence_score')::smallint,
