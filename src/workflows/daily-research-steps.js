@@ -165,11 +165,13 @@ export async function fetchAndRank({ runId, ownerId }) {
   try {
     await purgeExpiredRawContent(db, ownerId, now);
     await refreshRetainedEvidence(db, ownerId, now);
+    const metricsCapturedAt = new Date().toISOString();
     searchResult = await searchHybridRecentPosts({
       query: run.settings_snapshot.x_query,
       followedUsernames: run.settings_snapshot.followed_x_usernames,
       startTime: run.window_start,
       endTime: run.window_end,
+      qualityTime: metricsCapturedAt,
       candidateLimit: run.settings_snapshot.candidate_limit,
       aiInputLimit: run.settings_snapshot.ai_input_limit,
     });
@@ -181,7 +183,12 @@ export async function fetchAndRank({ runId, ownerId }) {
   // A workflow retry may reach this point after either write below committed.
   // Both canonical records and per-run snapshots therefore use their declared
   // unique keys as upsert conflicts rather than attempting a second insert.
-  await upsertCurrentPosts({ db, ownerId, now, posts });
+  await upsertCurrentPosts({
+    db,
+    ownerId,
+    now: searchResult.meta.metricsCapturedAt,
+    posts,
+  });
 
   const { error: clearError } = await db
     .from("run_posts")
@@ -205,7 +212,7 @@ export async function fetchAndRank({ runId, ownerId }) {
   }
 
   const ranked = rankPosts(searchResult.rankablePosts, {
-    now: run.window_end,
+    now: searchResult.meta.metricsCapturedAt,
     limit: run.settings_snapshot.candidate_limit,
   });
   const selected = selectHybridAiInput(ranked, {
@@ -238,6 +245,7 @@ export async function fetchAndRank({ runId, ownerId }) {
     x_followed_quality_passed: searchResult.meta.followedQualityPassed,
     x_topic_returned: searchResult.meta.topicReturned,
     x_cross_channel_duplicates: searchResult.meta.crossChannelDuplicates,
+    x_metrics_captured_at: searchResult.meta.metricsCapturedAt,
     after_filtering: ranked.length,
     sent_to_luna: selected.length,
     sent_to_luna_followed: selected.filter(

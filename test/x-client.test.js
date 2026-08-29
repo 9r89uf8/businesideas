@@ -20,6 +20,7 @@ const {
   X_EXPANSIONS,
   X_POST_FIELDS,
   X_USER_FIELDS,
+  normalizeXPost,
   xRequest,
 } = await import("../src/lib/x/client.js");
 const {
@@ -69,9 +70,11 @@ function makePost(index) {
     conversation_id: id,
     lang: "en",
     public_metrics: {
-      like_count: index,
-      retweet_count: 2,
+      impression_count: index * 1_000,
       reply_count: 3,
+      like_count: index,
+      bookmark_count: 4,
+      retweet_count: 2,
       quote_count: 4,
     },
   };
@@ -167,6 +170,37 @@ test("getRecentSearchWindow keeps end_time 30 seconds behind X", () => {
   );
 });
 
+test("X normalization preserves views and saves without inventing missing counts", () => {
+  const normalized = normalizeXPost({
+    id: "123",
+    author_id: "456",
+    created_at: "2026-08-27T12:00:00Z",
+    public_metrics: {
+      impression_count: 12_345,
+      reply_count: 8,
+      like_count: 120,
+      bookmark_count: 14,
+      retweet_count: 999,
+      quote_count: 999,
+    },
+  });
+
+  assert.deepEqual(normalized.public_metrics, {
+    impression_count: 12_345,
+    reply_count: 8,
+    like_count: 120,
+    bookmark_count: 14,
+  });
+
+  const missing = normalizeXPost({
+    id: "789",
+    author_id: "987",
+    public_metrics: { reply_count: 0, like_count: 0 },
+  });
+  assert.equal(missing.public_metrics.impression_count, null);
+  assert.equal(missing.public_metrics.bookmark_count, null);
+});
+
 test("followed usernames are safely normalized, deduplicated, and capped", () => {
   const normalized = normalizeFollowedUsernames([
     " @OpenAI ",
@@ -197,45 +231,65 @@ test("followed usernames are safely normalized, deduplicated, and capped", () =>
   assert.equal(buildFollowedAccountsQuery(["invalid handle!"]), null);
 });
 
-test("followed-account quality requires real engagement or discussion", () => {
-  const postWith = (publicMetrics) => ({ public_metrics: publicMetrics });
+test("followed-account quality is view-first and ignores reposts and quotes", () => {
+  const now = "2026-08-27T13:00:00Z";
+  const postWith = (publicMetrics) => ({
+    created_at: "2026-08-27T11:00:00Z",
+    public_metrics: publicMetrics,
+  });
 
   assert.equal(
     isStrongFollowedPost(
       postWith({
-        like_count: 1,
-        retweet_count: 0,
+        impression_count: 100,
         reply_count: 0,
-        quote_count: 0,
+        like_count: 1,
+        bookmark_count: 0,
+        retweet_count: 1_000_000,
+        quote_count: 1_000_000,
       }),
+      { now },
     ),
     false,
   );
   assert.equal(
     isStrongFollowedPost(
       postWith({
-        like_count: 6,
-        retweet_count: 0,
-        reply_count: 3,
-        quote_count: 0,
+        impression_count: 1_100,
+        reply_count: 0,
+        like_count: 0,
+        bookmark_count: 0,
       }),
+      { now },
     ),
     true,
   );
   assert.equal(
     isStrongFollowedPost(
       postWith({
-        like_count: 0,
-        retweet_count: 20,
-        reply_count: 0,
-        quote_count: 0,
+        impression_count: 500,
+        reply_count: 2,
+        like_count: 2,
+        bookmark_count: 0,
       }),
+      { now },
     ),
     true,
   );
+  assert.equal(
+    isStrongFollowedPost(
+      postWith({
+        reply_count: 100,
+        like_count: 1_000,
+        bookmark_count: 1_000,
+      }),
+      { now },
+    ),
+    false,
+  );
 });
 
-test("hybrid search queries followed accounts first within one candidate budget", async () => {
+test("hybrid search queries followed accounts first and keeps retained candidates bounded", async () => {
   const calls = [];
   const followedIndexes = [1, 2, 3, 4, 5];
   const topicIndexes = [5, 6, 7, 8, 9];
@@ -245,6 +299,7 @@ test("hybrid search queries followed accounts first within one candidate budget"
     followedUsernames: ["OpenAI", "AnthropicAI"],
     startTime: "2026-08-26T13:00:00Z",
     endTime: "2026-08-27T13:00:00Z",
+    qualityTime: "2026-08-27T13:00:00Z",
     candidateLimit: 10,
     aiInputLimit: 10,
     fetchImpl: async (requestUrl) => {
@@ -264,9 +319,11 @@ test("hybrid search queries followed accounts first within one candidate budget"
         posts[0] = {
           ...posts[0],
           public_metrics: {
-            like_count: 1,
-            retweet_count: 0,
+            impression_count: 100,
             reply_count: 0,
+            like_count: 1,
+            bookmark_count: 0,
+            retweet_count: 0,
             quote_count: 0,
           },
         };
@@ -289,17 +346,69 @@ test("hybrid search queries followed accounts first within one candidate budget"
   assert.ok(result.meta.rawResultCount <= 10);
   assert.equal(result.meta.followedReturned, 5);
   assert.equal(result.meta.followedQualityPassed, 4);
-  assert.equal(result.meta.topicRequestedLimit, 5);
+  assert.equal(result.meta.topicRequestedLimit, 6);
   assert.equal(result.meta.topicReturned, 4);
   assert.equal(result.meta.crossChannelDuplicates, 1);
+  assert.equal(result.meta.metricsCapturedAt, "2026-08-27T13:00:00.000Z");
   assert.equal(result.posts.length, 9);
   assert.equal(result.rankablePosts.length, 8);
   assert.equal(result.posts[0].source_channel, "followed");
-  assert.equal(result.posts.at(-1).source_channel, "topic");
   assert.equal(
     result.rankablePosts.some((post) => post.id === "1001"),
     false,
   );
+});
+
+test("low-quality followed results never reduce the topic fallback budget", async () => {
+  const calls = [];
+  const followedIndexes = Array.from({ length: 10 }, (_, index) => index + 1);
+  const topicIndexes = Array.from({ length: 20 }, (_, index) => index + 101);
+
+  const result = await searchHybridRecentPosts({
+    query: "AI problem lang:en -is:retweet",
+    followedUsernames: ["quiet_active"],
+    startTime: "2026-08-26T13:00:00Z",
+    endTime: "2026-08-27T13:00:00Z",
+    qualityTime: "2026-08-27T13:00:00Z",
+    candidateLimit: 20,
+    aiInputLimit: 20,
+    fetchImpl: async (requestUrl) => {
+      const url = new URL(requestUrl);
+      const followed = url.searchParams.get("query").includes(
+        "from:quiet_active",
+      );
+      calls.push(url.searchParams.get("max_results"));
+      const indexes = followed ? followedIndexes : topicIndexes;
+      const posts = indexes.map(makePost);
+
+      if (followed) {
+        for (const post of posts) {
+          post.public_metrics = {
+            impression_count: 100,
+            reply_count: 0,
+            like_count: 0,
+            bookmark_count: 0,
+          };
+        }
+      }
+
+      return jsonResponse({
+        data: posts,
+        includes: { users: indexes.map(makeUser) },
+        meta: { result_count: indexes.length },
+      });
+    },
+  });
+
+  assert.deepEqual(calls, ["10", "20"]);
+  assert.equal(result.meta.followedReturned, 10);
+  assert.equal(result.meta.followedQualityPassed, 0);
+  assert.equal(result.meta.topicRequestedLimit, 20);
+  assert.equal(result.meta.topicReturned, 20);
+  assert.equal(result.meta.rawResultCount, 30);
+  assert.equal(result.posts.length, 20);
+  assert.equal(result.rankablePosts.length, 20);
+  assert.ok(result.posts.every((post) => post.source_channel === "topic"));
 });
 
 test("hybrid search gives topic discovery the full budget when followed accounts are quiet", async () => {
@@ -311,6 +420,7 @@ test("hybrid search gives topic discovery the full budget when followed accounts
     followedUsernames: ["quiet_account"],
     startTime: "2026-08-26T13:00:00Z",
     endTime: "2026-08-27T13:00:00Z",
+    qualityTime: "2026-08-27T13:00:00Z",
     candidateLimit: 20,
     aiInputLimit: 20,
     fetchImpl: async (requestUrl) => {
@@ -348,6 +458,7 @@ test("hybrid search preserves followed-request rate-limit failures", async () =>
       followedUsernames: ["OpenAI"],
       startTime: "2026-08-26T13:00:00Z",
       endTime: "2026-08-27T13:00:00Z",
+      qualityTime: "2026-08-27T13:00:00Z",
       candidateLimit: 50,
       aiInputLimit: 25,
       fetchImpl: async () => {
@@ -405,6 +516,14 @@ test("searchRecentPosts requests two relevancy pages and normalizes IDs", async 
   assert.equal(typeof result.posts[0].conversation_id, "string");
   assert.equal(result.posts[0].author_username, "author_1");
   assert.equal(result.posts[0].url, "https://x.com/author_1/status/1001");
+  assert.deepEqual(result.posts[0].public_metrics, {
+    impression_count: 1_000,
+    reply_count: 3,
+    like_count: 1,
+    bookmark_count: 4,
+  });
+  assert.equal(Object.hasOwn(result.posts[0].public_metrics, "retweet_count"), false);
+  assert.equal(Object.hasOwn(result.posts[0].public_metrics, "quote_count"), false);
   assert.equal(result.posts[0].search_position, 1);
   assert.equal(result.posts[199].search_position, 200);
 

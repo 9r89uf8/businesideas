@@ -2,7 +2,12 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 import { start } from "workflow/api";
-import { DEFAULT_PREFERENCES, DEFAULT_X_QUERY, PIPELINE } from "@/lib/config";
+import {
+  DEFAULT_PREFERENCES,
+  DEFAULT_X_QUERY,
+  PIPELINE,
+  POST_QUALITY,
+} from "@/lib/config";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import {
   getRecentSearchWindow,
@@ -65,6 +70,7 @@ export function buildEffectiveSettings(settings) {
   const preferences = settings?.preferences;
 
   return {
+    ranking_version: POST_QUALITY.version,
     x_query:
       typeof settings?.x_query === "string" && settings.x_query.trim()
         ? settings.x_query.trim()

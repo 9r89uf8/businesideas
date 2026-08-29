@@ -183,8 +183,12 @@ export function normalizeXId(value, label = "X ID") {
 }
 
 function normalizeMetric(value) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+
   const number = Number(value);
-  return Number.isFinite(number) && number >= 0 ? number : 0;
+  return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
 export function indexUsers(users) {
@@ -227,10 +231,10 @@ export function normalizeXPost(post, usersById = new Map()) {
     conversation_id: conversationId,
     lang: typeof post?.lang === "string" ? post.lang : null,
     public_metrics: {
-      like_count: normalizeMetric(metrics.like_count),
-      retweet_count: normalizeMetric(metrics.retweet_count),
+      impression_count: normalizeMetric(metrics.impression_count),
       reply_count: normalizeMetric(metrics.reply_count),
-      quote_count: normalizeMetric(metrics.quote_count),
+      like_count: normalizeMetric(metrics.like_count),
+      bookmark_count: normalizeMetric(metrics.bookmark_count),
     },
     author_username: username,
     url: username

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { requireOwner } from "@/lib/auth";
+import { POST_QUALITY } from "@/lib/config";
 
 export const metadata = { title: "Source feed" };
 export const dynamic = "force-dynamic";
@@ -23,8 +24,9 @@ function formatDate(value, includeTime = false) {
 }
 
 function compactNumber(value) {
+  if (value === undefined || value === null || value === "") return "—";
   const number = Number(value);
-  if (!Number.isFinite(number)) return "0";
+  if (!Number.isFinite(number) || number < 0) return "—";
   return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(number);
 }
 
@@ -37,15 +39,18 @@ function sourceLabel(channel) {
   return channel === "followed" ? "Followed account" : "Topic discovery";
 }
 
-function PostCard({ snapshot }) {
+function PostCard({ snapshot, rankingVersion }) {
   const post = snapshot.post;
   const metrics = snapshot.metrics || {};
-  const engagement = [
+  const qualityMetrics = [
+    ["Views", metrics.impression_count, "X post impressions; not unique viewers"],
+    ["Comments", metrics.reply_count],
     ["Likes", metrics.like_count],
-    ["Reposts", metrics.retweet_count],
-    ["Replies", metrics.reply_count],
-    ["Quotes", metrics.quote_count],
+    ["Saves", metrics.bookmark_count],
   ];
+  const usesViewFirstRanking =
+    rankingVersion === POST_QUALITY.version ||
+    Object.hasOwn(metrics, "impression_count");
 
   return (
     <article className="panel overflow-hidden">
@@ -109,9 +114,9 @@ function PostCard({ snapshot }) {
         </div>
 
         <dl className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-          {engagement.map(([label, value]) => (
+          {qualityMetrics.map(([label, value, title]) => (
             <div key={label} className="rounded-xl bg-[var(--ink)]/[0.035] px-3 py-2.5">
-              <dt className="text-[0.66rem] font-bold uppercase tracking-[0.09em] text-[var(--ink-soft)]">{label}</dt>
+              <dt title={title} className="text-[0.66rem] font-bold uppercase tracking-[0.09em] text-[var(--ink-soft)]">{label}</dt>
               <dd className="mt-1 font-mono text-sm font-bold">{compactNumber(value)}</dd>
             </div>
           ))}
@@ -140,7 +145,7 @@ function PostCard({ snapshot }) {
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-3 text-[0.68rem] text-[var(--ink-soft)]">
           <span>Search position {snapshot.search_position ?? "—"}</span>
-          <span>Quality score {Number.isFinite(snapshot.deterministic_score) ? snapshot.deterministic_score.toFixed(2) : "—"}</span>
+          <span>{usesViewFirstRanking ? "View-first score" : "Legacy score"} {Number.isFinite(snapshot.deterministic_score) ? snapshot.deterministic_score.toFixed(2) : "—"}</span>
         </div>
       </div>
     </article>
@@ -157,7 +162,7 @@ export default async function PostsPage({ searchParams }) {
 
   const { data: runs, error: runsError } = await supabase
     .from("runs")
-    .select("id, status, stage, counts, created_at, completed_at")
+    .select("id, status, stage, counts, settings_snapshot, created_at, completed_at")
     .eq("owner_id", ownerId)
     .order("created_at", { ascending: false })
     .limit(20);
@@ -210,7 +215,7 @@ export default async function PostsPage({ searchParams }) {
           <p className="eyebrow">Source feed</p>
           <h1 className="mt-2 text-4xl font-semibold tracking-[-0.055em] sm:text-5xl">See what the research actually read.</h1>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--ink-soft)]">
-            Inspect stored X posts, engagement, selection decisions, and model-added signals. Raw post text is retained for up to 30 days.
+            Inspect stored X posts, view-first quality metrics, selection decisions, and model-added signals. Raw post text is retained for up to 30 days.
           </p>
         </div>
         <Link href="/settings#x-sources" className="focus-ring rounded-xl bg-[var(--ink)] px-4 py-3 text-sm font-bold text-white">
@@ -277,7 +282,13 @@ export default async function PostsPage({ searchParams }) {
         </section>
       ) : snapshots.length ? (
         <section className="mt-4 grid gap-4 lg:grid-cols-2">
-          {snapshots.map((snapshot) => <PostCard key={snapshot.post_id} snapshot={snapshot} />)}
+          {snapshots.map((snapshot) => (
+            <PostCard
+              key={snapshot.post_id}
+              snapshot={snapshot}
+              rankingVersion={selectedRun?.settings_snapshot?.ranking_version}
+            />
+          ))}
         </section>
       ) : (
         <section className="panel mt-5 px-6 py-14 text-center">

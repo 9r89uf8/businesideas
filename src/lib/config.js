@@ -94,6 +94,27 @@ export const IDEA_HARD_FILTER_CHECKS = [
   "no_generic_chat_or_companion",
 ];
 
+export const POST_QUALITY = Object.freeze({
+  version: "views_v2",
+  ageExponent: 0.55,
+  minimumAgeHours: 2,
+  maximumAgeHours: 168,
+  weights: Object.freeze({
+    views: 0.65,
+    comments: 0.2,
+    likes: 0.1,
+    saves: 0.05,
+  }),
+  followedGate: Object.freeze({
+    strongAdjustedViews: 750,
+    supportedAdjustedViews: 250,
+    minimumSupport: 10,
+    commentSupportWeight: 4,
+    likeSupportWeight: 1,
+    saveSupportWeight: 0.25,
+  }),
+});
+
 export const PIPELINE = {
   models: {
     extraction: "gpt-5.6-luna",

@@ -4,18 +4,20 @@ import test from "node:test";
 
 import {
   calculateOpportunityScore,
+  clampPostAge,
   createPostTextHash,
-  discussionScore,
-  engagementVelocity,
   hashPostText,
   hasObviousRepeatedPromotion,
+  metricSignal,
   normalizePostText,
   percentileRanks,
+  postAgeInHours,
+  qualityMetrics,
+  qualityPercentileRanks,
+  qualitySignals,
   rankPosts,
-  resultPositionScore,
   selectHybridAiInput,
   selectSignals,
-  weightedEngagement,
 } from "../src/lib/ranking.js";
 
 const NOW = new Date("2026-08-27T12:00:00.000Z");
@@ -23,7 +25,12 @@ const NOW = new Date("2026-08-27T12:00:00.000Z");
 function candidate({
   id,
   author = "author-a",
+  views = 0,
+  comments = 0,
   likes = 0,
+  saves = 0,
+  reposts = 0,
+  quotes = 0,
   position = 1,
   text = `Post ${id} describes a recurring manual AI workflow problem for a real business team.`,
   ...extra
@@ -33,10 +40,12 @@ function candidate({
     author_id: author,
     created_at: "2026-08-27T10:00:00.000Z",
     public_metrics: {
+      impression_count: views,
+      reply_count: comments,
       like_count: likes,
-      retweet_count: 0,
-      reply_count: 0,
-      quote_count: 0,
+      bookmark_count: saves,
+      retweet_count: reposts,
+      quote_count: quotes,
     },
     search_position: position,
     text,
@@ -69,18 +78,47 @@ test("detects only explicit repeated promotional language", () => {
   );
 });
 
-test("calculates engagement and discussion formulas", () => {
+test("calculates view-first signals and preserves the requested metric order", () => {
   const metrics = {
+    impression_count: 10_000,
+    reply_count: 30,
     like_count: 10,
-    retweet_count: 2,
-    reply_count: 3,
-    quote_count: 4,
+    bookmark_count: 4,
+    retweet_count: 1_000_000,
+    quote_count: 1_000_000,
   };
 
-  assert.equal(weightedEngagement(metrics), 31);
-  assert.equal(discussionScore(metrics), Math.log1p(11));
-  assert.equal(engagementVelocity(metrics, 1), Math.log1p(31) / 2 ** 0.35);
-  assert.equal(engagementVelocity(metrics, 2), engagementVelocity(metrics, 1));
+  assert.deepEqual(qualityMetrics(metrics), {
+    views: 10_000,
+    comments: 30,
+    likes: 10,
+    saves: 4,
+  });
+  assert.equal(metricSignal(10_000, 1), Math.log1p(10_000 / 2 ** 0.55));
+  assert.equal(metricSignal(10_000, 2), metricSignal(10_000, 1));
+  assert.deepEqual(
+    qualitySignals(metrics, 2),
+    qualitySignals({
+      impression_count: 10_000,
+      reply_count: 30,
+      like_count: 10,
+      bookmark_count: 4,
+      retweet_count: 0,
+      quote_count: 0,
+    }, 2),
+  );
+});
+
+test("clamps post age conservatively", () => {
+  assert.equal(clampPostAge(1), 2);
+  assert.equal(clampPostAge(500), 168);
+  assert.equal(clampPostAge(Number.NaN), 168);
+  assert.equal(
+    postAgeInHours({ created_at: "2026-08-27T10:00:00Z" }, NOW),
+    2,
+  );
+  assert.equal(postAgeInHours({ created_at: "not-a-date" }, NOW), 168);
+  assert.ok(metricSignal(1_000, 2) > metricSignal(1_000, 24));
 });
 
 test("handles percentile ties, empty pools, and singleton pools", () => {
@@ -89,25 +127,92 @@ test("handles percentile ties, empty pools, and singleton pools", () => {
   assert.deepEqual(percentileRanks([1, 2, 3]), [0, 0.5, 1]);
   assert.deepEqual(percentileRanks([2, 2, 2]), [0.5, 0.5, 0.5]);
   assert.deepEqual(percentileRanks([1, 2, 2, 3]), [0, 0.5, 0.5, 1]);
-  assert.equal(resultPositionScore(1, 1), 1);
-  assert.equal(resultPositionScore(20, 10), 0);
+  assert.deepEqual(qualityPercentileRanks([0, 0, 0]), [0, 0, 0]);
+  assert.deepEqual(qualityPercentileRanks([0, 0, 5]), [0, 0, 1]);
+  assert.deepEqual(qualityPercentileRanks([5]), [1]);
+});
+
+test("views dominate comments, which outrank likes and saves", () => {
+  const reachWinner = rankPosts([
+    candidate({ id: "views", author: "views-author", views: 10_000 }),
+    candidate({
+      id: "interactions",
+      author: "interaction-author",
+      views: 100,
+      comments: 10_000,
+      likes: 10_000,
+      saves: 10_000,
+    }),
+  ], { now: NOW });
+
+  assert.equal(reachWinner[0].id, "views");
+  assert.ok(reachWinner[0].deterministic_score > reachWinner[1].deterministic_score);
+
+  const secondaryOrder = rankPosts([
+    candidate({ id: "comments", author: "comment-author", views: 1_000, comments: 1 }),
+    candidate({ id: "likes", author: "like-author", views: 1_000, likes: 1 }),
+    candidate({ id: "saves", author: "save-author", views: 1_000, saves: 1 }),
+  ], { now: NOW });
+
+  assert.deepEqual(
+    secondaryOrder.map((post) => post.id),
+    ["comments", "likes", "saves"],
+  );
+});
+
+test("repost, quote, and X result position never affect quality", () => {
+  const ranked = rankPosts([
+    candidate({
+      id: "b-poison",
+      author: "poison-author",
+      views: 1_000,
+      comments: 5,
+      likes: 20,
+      saves: 2,
+      reposts: 1_000_000_000,
+      quotes: 1_000_000_000,
+      position: 1,
+    }),
+    candidate({
+      id: "a-clean",
+      author: "clean-author",
+      views: 1_000,
+      comments: 5,
+      likes: 20,
+      saves: 2,
+      position: 200,
+    }),
+  ], { now: NOW });
+
+  assert.equal(ranked[0].id, "a-clean");
+  assert.equal(ranked[0].deterministic_score, ranked[1].deterministic_score);
+  assert.equal(ranked[0].view_signal, ranked[1].view_signal);
+});
+
+test("an all-zero metric pool receives no artificial quality credit", () => {
+  const ranked = rankPosts([
+    candidate({ id: "zero-a", author: "zero-author-a" }),
+    candidate({ id: "zero-b", author: "zero-author-b" }),
+  ], { now: NOW });
+
+  assert.ok(ranked.every((post) => post.deterministic_score === 0));
 });
 
 test("filters, deduplicates, ranks, and enforces three posts per author", () => {
   const duplicateText =
     "Accounting teams manually verify every AI summary before it reaches a client.";
   const posts = [
-    candidate({ id: "duplicate-low", likes: 1, position: 1, text: duplicateText }),
+    candidate({ id: "duplicate-low", views: 100, position: 1, text: duplicateText }),
     candidate({
       id: "duplicate-high",
-      likes: 100,
+      views: 10_000,
       position: 2,
       text: `${duplicateText} https://example.com/details`,
     }),
-    candidate({ id: "a-second", likes: 80, position: 3 }),
-    candidate({ id: "a-third", likes: 70, position: 4 }),
-    candidate({ id: "a-fourth", likes: 60, position: 5 }),
-    candidate({ id: "other", author: "author-b", likes: 50, position: 6 }),
+    candidate({ id: "a-second", views: 8_000, position: 3 }),
+    candidate({ id: "a-third", views: 7_000, position: 4 }),
+    candidate({ id: "a-fourth", views: 6_000, position: 5 }),
+    candidate({ id: "other", author: "author-b", views: 5_000, position: 6 }),
     candidate({ id: "short", text: "Too short" }),
     candidate({
       id: "repost",

@@ -9,15 +9,13 @@ import {
   safeXErrorMetadata,
   xRequest,
 } from "./client.js";
+import { passesFollowedQualityGate } from "../ranking.js";
 
 const MAX_PAGES = 2;
 const MAX_RESULTS_PER_PAGE = 100;
 const MAX_CANDIDATES = MAX_PAGES * MAX_RESULTS_PER_PAGE;
 const MIN_PARTIAL_RESULT_COUNT = 50;
 const MAX_FOLLOWED_USERNAMES = 12;
-const MIN_FOLLOWED_WEIGHTED_ENGAGEMENT = 12;
-const MIN_FOLLOWED_DISCUSSION_ACTIONS = 2;
-const STRONG_FOLLOWED_WEIGHTED_ENGAGEMENT = 30;
 const MAX_X_QUERY_LENGTH = 512;
 const RECENT_SEARCH_WINDOW_MS = 7 * 24 * 60 * 60 * 1_000;
 const FIRST_RUN_WINDOW_MS = 24 * 60 * 60 * 1_000;
@@ -99,11 +97,6 @@ function normalizeLimit(limit) {
   return Math.min(limit, MAX_CANDIDATES);
 }
 
-function nonNegativeMetric(value) {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? number : 0;
-}
-
 /**
  * X usernames are case-insensitive and limited to 15 ASCII letters, numbers,
  * or underscores. Invalid values are discarded so settings can never inject
@@ -160,26 +153,12 @@ export function buildFollowedAccountsQuery(usernames) {
 
 /**
  * Followed accounts are a discovery preference, not a quality exemption.
- * A post needs either meaningful discussion plus baseline engagement, or a
- * stronger engagement total on its own. This prevents quiet/random posts from
- * displacing topic-discovered evidence merely because their author was added.
+ * A post needs real view reach, either strong on its own or supported by
+ * comments, likes, and saves. Repost and quote counts are ignored. This keeps
+ * quiet/random posts from displacing topic evidence solely because of author.
  */
-export function isStrongFollowedPost(post) {
-  const metrics = post?.public_metrics ?? post?.metrics ?? {};
-  const likes = nonNegativeMetric(metrics.like_count ?? metrics.likeCount);
-  const reposts = nonNegativeMetric(
-    metrics.retweet_count ?? metrics.retweetCount,
-  );
-  const replies = nonNegativeMetric(metrics.reply_count ?? metrics.replyCount);
-  const quotes = nonNegativeMetric(metrics.quote_count ?? metrics.quoteCount);
-  const weightedEngagement = likes + 1.5 * reposts + 2 * replies + 3 * quotes;
-  const discussionActions = replies + quotes;
-
-  return (
-    weightedEngagement >= STRONG_FOLLOWED_WEIGHTED_ENGAGEMENT ||
-    (weightedEngagement >= MIN_FOLLOWED_WEIGHTED_ENGAGEMENT &&
-      discussionActions >= MIN_FOLLOWED_DISCUSSION_ACTIONS)
-  );
+export function isStrongFollowedPost(post, options) {
+  return passesFollowedQualityGate(post, options);
 }
 
 function readPagePosts(payload) {
@@ -321,8 +300,9 @@ export async function searchRecentPosts({
  * by half the AI input size, so it cannot reduce topic discovery by more than
  * the number of Luna slots it could actually occupy.
  *
- * `posts` contains every fetched candidate for inspection/storage.
- * `rankablePosts` excludes followed posts that failed the engagement gate.
+ * `rankablePosts` contains qualifying followed posts plus topic discovery.
+ * `posts` is the bounded snapshot stored for inspection: it contains every
+ * rankable post and uses any spare capacity for failed followed candidates.
  */
 export async function searchHybridRecentPosts({
   query,
@@ -330,12 +310,17 @@ export async function searchHybridRecentPosts({
   startTime,
   previousWindowEnd,
   endTime,
+  qualityTime,
   candidateLimit = MAX_CANDIDATES,
   aiInputLimit = 100,
   fetchImpl = globalThis.fetch,
   signal,
 } = {}) {
   const requestedCandidateLimit = normalizeLimit(candidateLimit);
+  const metricsCapturedAt =
+    qualityTime === undefined
+      ? new Date()
+      : parseTime(qualityTime, "qualityTime");
   const normalizedUsernames = normalizeFollowedUsernames(followedUsernames);
   const normalizedAiInputLimit =
     Number.isInteger(aiInputLimit) && aiInputLimit > 0
@@ -364,7 +349,11 @@ export async function searchHybridRecentPosts({
     ...post,
     source_channel: "followed",
   }));
-  const topicRequestedLimit = requestedCandidateLimit - followedPosts.length;
+  const followedQualityPosts = followedPosts.filter((post) =>
+    isStrongFollowedPost(post, { now: metricsCapturedAt }),
+  );
+  const topicRequestedLimit =
+    requestedCandidateLimit - followedQualityPosts.length;
   const topicResult = await searchRecentPosts({
     query,
     startTime,
@@ -375,22 +364,27 @@ export async function searchHybridRecentPosts({
     signal,
   });
   const followedIds = new Set(followedPosts.map((post) => post.id));
+  const followedQualityIds = new Set(
+    followedQualityPosts.map((post) => post.id),
+  );
   const topicPosts = topicResult.posts
-    .filter((post) => !followedIds.has(post.id))
+    .filter((post) => !followedQualityIds.has(post.id))
     .map((post) => ({
       ...post,
       source_channel: "topic",
     }));
-  const followedQualityPosts = followedPosts.filter(isStrongFollowedPost);
-  const posts = [...followedPosts, ...topicPosts].slice(
+  const rankablePosts = [...followedQualityPosts, ...topicPosts].slice(
     0,
     requestedCandidateLimit,
   );
-  const retainedIds = new Set(posts.map((post) => post.id));
-  const rankablePosts = [
-    ...followedQualityPosts,
-    ...topicPosts,
-  ].filter((post) => retainedIds.has(post.id));
+  const rankableIds = new Set(rankablePosts.map((post) => post.id));
+  const failedFollowedPosts = followedPosts.filter(
+    (post) => !followedQualityIds.has(post.id) && !rankableIds.has(post.id),
+  );
+  const posts = [...rankablePosts, ...failedFollowedPosts].slice(
+    0,
+    requestedCandidateLimit,
+  );
 
   return {
     posts,
@@ -405,6 +399,7 @@ export async function searchHybridRecentPosts({
       windowStart:
         followedResult?.meta.windowStart || topicResult.meta.windowStart,
       windowEnd: followedResult?.meta.windowEnd || topicResult.meta.windowEnd,
+      metricsCapturedAt: metricsCapturedAt.toISOString(),
       followedAccountsConfigured: normalizedUsernames.length,
       followedRequestedLimit: followedQuery ? followedRequestedLimit : 0,
       followedReturned: followedPosts.length,
@@ -412,7 +407,7 @@ export async function searchHybridRecentPosts({
       topicRequestedLimit,
       topicReturned: topicPosts.length,
       crossChannelDuplicates:
-        topicResult.posts.length - topicPosts.length,
+        topicResult.posts.filter((post) => followedIds.has(post.id)).length,
       pagesFetched:
         (followedResult?.meta.pagesFetched || 0) +
         topicResult.meta.pagesFetched,

@@ -169,6 +169,7 @@ test("buildEffectiveSettings applies safe defaults and operating caps", () => {
   const defaults = buildEffectiveSettings(null);
   assert.equal(defaults.candidate_limit, 200);
   assert.equal(defaults.ai_input_limit, 100);
+  assert.equal(defaults.ranking_version, "views_v2");
   assert.match(defaults.x_query, /lang:en -is:retweet/);
   assert.deepEqual(defaults.followed_x_usernames, []);
   assert.ok(defaults.preferences.preferred_customers.length > 0);

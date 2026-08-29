@@ -1,4 +1,4 @@
-import { PIPELINE } from "./config.js";
+import { PIPELINE, POST_QUALITY } from "./config.js";
 import { sha256Hex } from "./sha256.js";
 
 const MAX_POSTS_PER_AUTHOR = 3;
@@ -17,8 +17,19 @@ function nonNegativeNumber(value) {
   return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
-function metricValue(metrics, snakeCaseKey, camelCaseKey) {
-  return nonNegativeNumber(metrics?.[snakeCaseKey] ?? metrics?.[camelCaseKey]);
+function optionalMetricValue(metrics, ...keys) {
+  for (const key of keys) {
+    const value = metrics?.[key];
+
+    if (value === undefined || value === null || value === "") {
+      continue;
+    }
+
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? number : null;
+  }
+
+  return null;
 }
 
 function metricsFor(post) {
@@ -41,14 +52,6 @@ function authorKey(post, originalIndex) {
     : `missing-author:${postId(post, originalIndex)}`;
 }
 
-function searchPosition(post, originalIndex) {
-  const value = Number(
-    post?.search_position ?? post?.searchPosition ?? post?.position,
-  );
-
-  return Number.isInteger(value) && value > 0 ? value : originalIndex + 1;
-}
-
 function createdAtMilliseconds(post) {
   const value = post?.created_at ?? post?.createdAt ?? post?.x_created_at;
   const milliseconds = new Date(value).getTime();
@@ -69,10 +72,10 @@ function nowMilliseconds(now) {
 function compareRankedPosts(left, right) {
   return (
     right.deterministic_score - left.deterministic_score ||
-    right.engagement_velocity - left.engagement_velocity ||
-    right.discussion_score - left.discussion_score ||
-    right.result_position_score - left.result_position_score ||
-    left._searchPosition - right._searchPosition ||
+    right.view_signal - left.view_signal ||
+    right.comment_signal - left.comment_signal ||
+    right.like_signal - left.like_signal ||
+    right.save_signal - left.save_signal ||
     left._postId.localeCompare(right._postId) ||
     left._originalIndex - right._originalIndex
   );
@@ -161,25 +164,97 @@ export function hasObviousRepeatedPromotion(text) {
   return repeatedAdjacentPhrase(tokens);
 }
 
-export function weightedEngagement(metrics = {}) {
-  const likes = metricValue(metrics, "like_count", "likeCount");
-  const reposts = metricValue(metrics, "retweet_count", "retweetCount");
-  const replies = metricValue(metrics, "reply_count", "replyCount");
-  const quotes = metricValue(metrics, "quote_count", "quoteCount");
-
-  return likes + 1.5 * reposts + 2 * replies + 3 * quotes;
+export function qualityMetrics(metrics = {}) {
+  return {
+    views: optionalMetricValue(
+      metrics,
+      "impression_count",
+      "impressionCount",
+      "views",
+    ),
+    comments: optionalMetricValue(
+      metrics,
+      "reply_count",
+      "replyCount",
+      "comment_count",
+      "commentCount",
+    ),
+    likes: optionalMetricValue(metrics, "like_count", "likeCount"),
+    saves: optionalMetricValue(
+      metrics,
+      "bookmark_count",
+      "bookmarkCount",
+      "save_count",
+      "saveCount",
+    ),
+  };
 }
 
-export function engagementVelocity(metrics = {}, ageInHours = 0) {
-  const safeAge = Math.max(nonNegativeNumber(ageInHours), 2);
-  return Math.log1p(weightedEngagement(metrics)) / safeAge ** 0.35;
+export function clampPostAge(ageInHours) {
+  const number = Number(ageInHours);
+
+  if (!Number.isFinite(number)) {
+    return POST_QUALITY.maximumAgeHours;
+  }
+
+  return clamp(
+    number,
+    POST_QUALITY.minimumAgeHours,
+    POST_QUALITY.maximumAgeHours,
+  );
 }
 
-export function discussionScore(metrics = {}) {
-  const replies = metricValue(metrics, "reply_count", "replyCount");
-  const quotes = metricValue(metrics, "quote_count", "quoteCount");
+export function postAgeInHours(post, now = new Date()) {
+  const currentTime = nowMilliseconds(now);
+  const createdAt = createdAtMilliseconds(post);
 
-  return Math.log1p(replies + 2 * quotes);
+  if (createdAt === null) {
+    return POST_QUALITY.maximumAgeHours;
+  }
+
+  return clampPostAge((currentTime - createdAt) / 3_600_000);
+}
+
+export function metricSignal(value, ageInHours) {
+  const count = nonNegativeNumber(value);
+  const age = clampPostAge(ageInHours);
+
+  return Math.log1p(count / age ** POST_QUALITY.ageExponent);
+}
+
+export function qualitySignals(metrics = {}, ageInHours) {
+  const values = qualityMetrics(metrics);
+
+  return {
+    view_signal: metricSignal(values.views, ageInHours),
+    comment_signal: metricSignal(values.comments, ageInHours),
+    like_signal: metricSignal(values.likes, ageInHours),
+    save_signal: metricSignal(values.saves, ageInHours),
+  };
+}
+
+export function passesFollowedQualityGate(post, { now = new Date() } = {}) {
+  const values = qualityMetrics(metricsFor(post));
+
+  if (values.views === null) {
+    return false;
+  }
+
+  const age = postAgeInHours(post, now);
+  const adjustedViews =
+    values.views / age ** POST_QUALITY.ageExponent;
+  const support =
+    POST_QUALITY.followedGate.commentSupportWeight *
+      (values.comments ?? 0) +
+    POST_QUALITY.followedGate.likeSupportWeight * (values.likes ?? 0) +
+    POST_QUALITY.followedGate.saveSupportWeight * (values.saves ?? 0);
+
+  return (
+    adjustedViews >= POST_QUALITY.followedGate.strongAdjustedViews ||
+    (adjustedViews >=
+      POST_QUALITY.followedGate.supportedAdjustedViews &&
+      support >= POST_QUALITY.followedGate.minimumSupport)
+  );
 }
 
 /**
@@ -220,16 +295,17 @@ export function percentileRanks(values) {
   return normalizedValues.map((value) => ranksByValue.get(value));
 }
 
-export function resultPositionScore(position, candidateCount) {
-  if (candidateCount <= 1) {
-    return 1;
+export function qualityPercentileRanks(values) {
+  if (!Array.isArray(values)) {
+    throw new TypeError("values must be an array");
   }
 
-  const safePosition = Number.isFinite(Number(position))
-    ? Number(position)
-    : candidateCount;
+  const normalized = values.map(nonNegativeNumber);
 
-  return clamp(1 - (safePosition - 1) / (candidateCount - 1), 0, 1);
+  const ranks = percentileRanks(normalized);
+  return ranks.map((rank, index) =>
+    normalized[index] === 0 ? 0 : rank,
+  );
 }
 
 /**
@@ -258,8 +334,6 @@ export function rankPosts(
     return [];
   }
 
-  const currentTime = nowMilliseconds(now);
-  const candidateCount = posts.length;
   const candidates = posts.flatMap((post, originalIndex) => {
     const text = typeof post?.text === "string" ? post.text : "";
     const normalizedText = normalizePostText(text);
@@ -274,27 +348,18 @@ export function rankPosts(
     }
 
     const metrics = metricsFor(post);
-    const createdAt = createdAtMilliseconds(post);
-    const ageInHours =
-      createdAt === null ? 2 : Math.max((currentTime - createdAt) / 3_600_000, 0);
-    const originalSearchPosition = searchPosition(post, originalIndex);
+    const ageInHours = postAgeInHours(post, now);
+    const signals = qualitySignals(metrics, ageInHours);
 
     return [
       {
         ...post,
         normalized_text: normalizedText,
         normalized_text_hash: createPostTextHash(normalizedText),
-        weighted_engagement: weightedEngagement(metrics),
-        engagement_velocity: engagementVelocity(metrics, ageInHours),
-        discussion_score: discussionScore(metrics),
-        result_position_score: resultPositionScore(
-          originalSearchPosition,
-          candidateCount,
-        ),
+        ...signals,
         _authorKey: authorKey(post, originalIndex),
         _originalIndex: originalIndex,
         _postId: postId(post, originalIndex),
-        _searchPosition: originalSearchPosition,
       },
     ];
   });
@@ -303,26 +368,37 @@ export function rankPosts(
     return [];
   }
 
-  const velocityPercentiles = percentileRanks(
-    candidates.map((candidate) => candidate.engagement_velocity),
+  const viewPercentiles = qualityPercentileRanks(
+    candidates.map((candidate) => candidate.view_signal),
   );
-  const discussionPercentiles = percentileRanks(
-    candidates.map((candidate) => candidate.discussion_score),
+  const commentPercentiles = qualityPercentileRanks(
+    candidates.map((candidate) => candidate.comment_signal),
+  );
+  const likePercentiles = qualityPercentileRanks(
+    candidates.map((candidate) => candidate.like_signal),
+  );
+  const savePercentiles = qualityPercentileRanks(
+    candidates.map((candidate) => candidate.save_signal),
   );
 
   const ranked = candidates
     .map((candidate, index) => {
-      const engagementPercentile = velocityPercentiles[index];
-      const discussionPercentile = discussionPercentiles[index];
+      const viewPercentile = viewPercentiles[index];
+      const commentPercentile = commentPercentiles[index];
+      const likePercentile = likePercentiles[index];
+      const savePercentile = savePercentiles[index];
 
       return {
         ...candidate,
-        engagement_velocity_percentile: engagementPercentile,
-        discussion_percentile: discussionPercentile,
+        view_percentile: viewPercentile,
+        comment_percentile: commentPercentile,
+        like_percentile: likePercentile,
+        save_percentile: savePercentile,
         deterministic_score:
-          0.55 * engagementPercentile +
-          0.3 * discussionPercentile +
-          0.15 * candidate.result_position_score,
+          POST_QUALITY.weights.views * viewPercentile +
+          POST_QUALITY.weights.comments * commentPercentile +
+          POST_QUALITY.weights.likes * likePercentile +
+          POST_QUALITY.weights.saves * savePercentile,
       };
     })
     .sort(compareRankedPosts);
@@ -350,7 +426,6 @@ export function rankPosts(
       _authorKey,
       _originalIndex,
       _postId,
-      _searchPosition,
       ...publicCandidate
     } = candidate;
     selected.push(publicCandidate);

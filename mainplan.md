@@ -23,12 +23,36 @@ Supabase Auth remains the authentication system and `OWNER_USER_ID` remains the 
 The editable topic query remains the broad discovery lane. Settings may also contain up to 12 X usernames for a preferred-account lane.
 
 1. Preferred-account search must still be constrained to AI-relevant language and exclude reposts.
-2. Preferred-account posts must pass a real engagement and discussion-quality gate before selection.
+2. Preferred-account posts must pass the view-first reach and response-quality gate before selection.
 3. Qualifying preferred-account posts may fill at most half of the posts sent to signal extraction. This is a ceiling, not a quota.
 4. Topic discovery fills every unused slot. If preferred accounts have no qualifying posts, the run behaves like the topic-only pipeline.
-5. Both lanes share the existing deterministic ranking, deduplication, total candidate limit, evidence rules, and raw-content retention policy.
+5. Both lanes share the deterministic ranking, deduplication, persisted candidate limit, evidence rules, and raw-content retention policy. The preferred-account probe may retrieve up to half the AI input limit in addition to the topic budget so preferred posts that fail quality never reduce topic discovery; no more than the configured candidate limit is retained or ranked.
 6. `run_posts` records whether a post came from the `followed` or `topic` lane.
-7. The private `/posts` page shows the stored X text, author, direct link, public engagement snapshot, deterministic selection state, and any later model signal. It must label raw X content separately from model interpretation.
+7. The private `/posts` page shows the stored X text, author, direct link, public quality-metric snapshot, deterministic selection state, and any later model signal. It must label raw X content separately from model interpretation.
+
+### View-first X quality ranking
+
+The engagement formula in section 5.5 is replaced by a view-first quality model. X post impressions are presented as views, replies as comments, and bookmarks as saves. Repost and quote counts must not be stored in new run snapshots, displayed as quality metrics, or influence any gate, score, or tie-break. Repost posts themselves remain excluded from discovery.
+
+For every candidate, calculate an age-adjusted logarithmic signal for views, comments, likes, and saves. Convert each signal to a percentile within the current candidate pool and calculate the deterministic score as:
+
+```text
+65% view percentile
+20% comment percentile
+10% like percentile
+ 5% save percentile
+```
+
+An all-zero metric contributes zero rather than a median percentile. X result position is retained for source inspection but does not contribute to quality.
+
+Preferred-account posts must also pass an absolute reach gate. With age clamped from two to 168 hours:
+
+```text
+adjusted views = views / age^0.55
+support = 4 × comments + likes + 0.25 × saves
+```
+
+The post passes when adjusted views are at least 750, or when adjusted views are at least 250 and support is at least 10. Age is measured at the start of the X metric fetch, including on workflow retries. A missing view count does not pass the preferred-account gate; topic discovery remains the fallback. Missing public metrics are stored as unavailable rather than silently presented as zero.
 
 ### Self-serve AI website opportunity contract
 
@@ -343,49 +367,35 @@ Hash the normalized result with SHA-256 and keep the highest-ranked instance.
 
 ---
 
-## 5.5 Engagement ranking
+## 5.5 View-first quality ranking
 
-Calculate:
-
-```text
-weighted engagement =
-    likes
-  + 1.5 × reposts
-  + 2 × replies
-  + 3 × quotes
-```
-
-Then:
+Use these X `public_metrics` fields only:
 
 ```text
-engagement velocity =
-  log(1 + weighted engagement)
-  ÷ max(age in hours, 2)^0.35
+views    = impression_count
+comments = reply_count
+likes    = like_count
+saves    = bookmark_count
 ```
 
-Also calculate:
+Repost and quote counts have no effect on application-controlled quality. Clamp post age at the metric-fetch timestamp to the range from two to 168 hours and calculate each signal as:
 
 ```text
-discussion score =
-  log(1 + replies + 2 × quotes)
+signal(metric) = log(1 + metric / age^0.55)
 ```
 
-Convert both values into percentile ranks within the current candidate pool.
+Convert the four signals into percentile ranks within the current candidate pool. An all-zero signal receives a zero percentile contribution.
 
 Final deterministic score:
 
 ```text
-55% engagement-velocity percentile
-30% discussion percentile
-15% X result-position score
+65% view percentile
+20% comment percentile
+10% like percentile
+ 5% save percentile
 ```
 
-Where:
-
-```text
-result-position score =
-  1 - ((position - 1) / (candidate count - 1))
-```
+Use the four age-adjusted signals in that same priority order for deterministic tie-breaking, followed by post ID. X result position is stored for inspection but does not influence quality.
 
 Select the top **100 posts** after applying the three-post-per-author limit.
 
@@ -2009,7 +2019,7 @@ A private dashboard showing fake runs and fake ideas.
 1. Implement the X recent-search client.
 2. Store canonical posts and metric snapshots.
 3. Implement text normalization.
-4. Implement engagement ranking.
+4. Implement view-first quality ranking.
 5. Display retrieved posts in a temporary development section.
 
 Deliverable:
