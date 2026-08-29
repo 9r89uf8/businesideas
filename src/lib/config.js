@@ -95,7 +95,8 @@ export const IDEA_HARD_FILTER_CHECKS = [
 ];
 
 export const POST_QUALITY = Object.freeze({
-  version: "views_v2",
+  version: "views_v3",
+  minimumViews: 50_000,
   ageExponent: 0.55,
   minimumAgeHours: 2,
   maximumAgeHours: 168,
@@ -104,14 +105,6 @@ export const POST_QUALITY = Object.freeze({
     comments: 0.2,
     likes: 0.1,
     saves: 0.05,
-  }),
-  followedGate: Object.freeze({
-    strongAdjustedViews: 750,
-    supportedAdjustedViews: 250,
-    minimumSupport: 10,
-    commentSupportWeight: 4,
-    likeSupportWeight: 1,
-    saveSupportWeight: 0.25,
   }),
 });
 
@@ -133,6 +126,7 @@ export const PIPELINE = {
   maxClusters: 8,
   maxGeneratedCandidates: 5,
   maxPublishedIdeas: 3,
+  researchWindowHours: 72,
   minimumCommercialScore: 50,
   maximumHypeScore: 75,
   minimumClusterEvidence: 60,

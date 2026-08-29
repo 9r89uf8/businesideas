@@ -9,7 +9,8 @@ import {
   safeXErrorMetadata,
   xRequest,
 } from "./client.js";
-import { passesFollowedQualityGate } from "../ranking.js";
+import { PIPELINE } from "../config.js";
+import { passesPostQualityGate } from "../ranking.js";
 
 const MAX_PAGES = 2;
 const MAX_RESULTS_PER_PAGE = 100;
@@ -18,8 +19,8 @@ const MIN_PARTIAL_RESULT_COUNT = 50;
 const MAX_FOLLOWED_USERNAMES = 12;
 const MAX_X_QUERY_LENGTH = 512;
 const RECENT_SEARCH_WINDOW_MS = 7 * 24 * 60 * 60 * 1_000;
-const FIRST_RUN_WINDOW_MS = 24 * 60 * 60 * 1_000;
-const SUCCESSFUL_RUN_OVERLAP_MS = 2 * 60 * 60 * 1_000;
+const RESEARCH_WINDOW_MS =
+  PIPELINE.researchWindowHours * 60 * 60 * 1_000;
 const RECENT_SEARCH_SAFETY_LAG_MS = 30 * 1_000;
 const X_USERNAME_PATTERN = /^[a-zA-Z0-9_]{1,15}$/;
 const FOLLOWED_AI_QUERY =
@@ -42,12 +43,11 @@ function toXTime(date) {
 }
 
 /**
- * Applies the first-run default and X recent-search's seven-day boundary.
- * A caller can supply the overlap-adjusted start from the last successful run.
+ * Uses a rolling three-day default and X recent-search's seven-day boundary.
+ * Explicit bounds are preserved so workflow retries query the stored window.
  */
 export function getRecentSearchWindow({
   startTime,
-  previousWindowEnd,
   endTime,
   currentTime,
 } = {}) {
@@ -66,13 +66,8 @@ export function getRecentSearchWindow({
 
   if (startTime !== undefined) {
     requestedStart = parseTime(startTime, "startTime");
-  } else if (previousWindowEnd !== undefined) {
-    const previousEnd = parseTime(previousWindowEnd, "previousWindowEnd");
-    requestedStart = new Date(
-      previousEnd.getTime() - SUCCESSFUL_RUN_OVERLAP_MS,
-    );
   } else {
-    requestedStart = new Date(end.getTime() - FIRST_RUN_WINDOW_MS);
+    requestedStart = new Date(end.getTime() - RESEARCH_WINDOW_MS);
   }
 
   const earliestAllowed = new Date(end.getTime() - RECENT_SEARCH_WINDOW_MS);
@@ -153,13 +148,13 @@ export function buildFollowedAccountsQuery(usernames) {
 
 /**
  * Followed accounts are a discovery preference, not a quality exemption.
- * A post needs real view reach, either strong on its own or supported by
- * comments, likes, and saves. Repost and quote counts are ignored. This keeps
- * quiet/random posts from displacing topic evidence solely because of author.
+ * They must clear the same raw-view floor as topic-discovery posts.
  */
-export function isStrongFollowedPost(post, options) {
-  return passesFollowedQualityGate(post, options);
+export function isEligiblePost(post) {
+  return passesPostQualityGate(post);
 }
+
+export const isStrongFollowedPost = isEligiblePost;
 
 function readPagePosts(payload) {
   if (payload?.data === undefined) {
@@ -187,7 +182,6 @@ function readPagePosts(payload) {
 export async function searchRecentPosts({
   query,
   startTime,
-  previousWindowEnd,
   endTime,
   limit = MAX_CANDIDATES,
   fetchImpl = globalThis.fetch,
@@ -200,7 +194,6 @@ export async function searchRecentPosts({
   const requestedLimit = normalizeLimit(limit);
   const window = getRecentSearchWindow({
     startTime,
-    previousWindowEnd,
     endTime,
   });
   const posts = [];
@@ -300,15 +293,15 @@ export async function searchRecentPosts({
  * by half the AI input size, so it cannot reduce topic discovery by more than
  * the number of Luna slots it could actually occupy.
  *
- * `rankablePosts` contains qualifying followed posts plus topic discovery.
+ * `rankablePosts` contains only posts from either lane that clear the view floor.
  * `posts` is the bounded snapshot stored for inspection: it contains every
- * rankable post and uses any spare capacity for failed followed candidates.
+ * rankable post, then rejected topic candidates, and uses only spare capacity
+ * for rejected followed candidates from the additive probe.
  */
 export async function searchHybridRecentPosts({
   query,
   followedUsernames = [],
   startTime,
-  previousWindowEnd,
   endTime,
   qualityTime,
   candidateLimit = MAX_CANDIDATES,
@@ -337,7 +330,6 @@ export async function searchHybridRecentPosts({
     followedResult = await searchRecentPosts({
       query: followedQuery,
       startTime,
-      previousWindowEnd,
       endTime,
       limit: followedRequestedLimit,
       fetchImpl,
@@ -350,14 +342,13 @@ export async function searchHybridRecentPosts({
     source_channel: "followed",
   }));
   const followedQualityPosts = followedPosts.filter((post) =>
-    isStrongFollowedPost(post, { now: metricsCapturedAt }),
+    isEligiblePost(post),
   );
   const topicRequestedLimit =
     requestedCandidateLimit - followedQualityPosts.length;
   const topicResult = await searchRecentPosts({
     query,
     startTime,
-    previousWindowEnd,
     endTime,
     limit: topicRequestedLimit,
     fetchImpl,
@@ -368,12 +359,13 @@ export async function searchHybridRecentPosts({
     followedQualityPosts.map((post) => post.id),
   );
   const topicPosts = topicResult.posts
-    .filter((post) => !followedQualityIds.has(post.id))
+    .filter((post) => !followedIds.has(post.id))
     .map((post) => ({
       ...post,
       source_channel: "topic",
     }));
-  const rankablePosts = [...followedQualityPosts, ...topicPosts].slice(
+  const topicQualityPosts = topicPosts.filter(isEligiblePost);
+  const rankablePosts = [...followedQualityPosts, ...topicQualityPosts].slice(
     0,
     requestedCandidateLimit,
   );
@@ -381,10 +373,14 @@ export async function searchHybridRecentPosts({
   const failedFollowedPosts = followedPosts.filter(
     (post) => !followedQualityIds.has(post.id) && !rankableIds.has(post.id),
   );
-  const posts = [...rankablePosts, ...failedFollowedPosts].slice(
-    0,
-    requestedCandidateLimit,
+  const failedTopicPosts = topicPosts.filter(
+    (post) => !rankableIds.has(post.id),
   );
+  const posts = [
+    ...rankablePosts,
+    ...failedTopicPosts,
+    ...failedFollowedPosts,
+  ].slice(0, requestedCandidateLimit);
 
   return {
     posts,
@@ -406,6 +402,8 @@ export async function searchHybridRecentPosts({
       followedQualityPassed: followedQualityPosts.length,
       topicRequestedLimit,
       topicReturned: topicPosts.length,
+      topicQualityPassed: topicQualityPosts.length,
+      qualityPassed: rankablePosts.length,
       crossChannelDuplicates:
         topicResult.posts.filter((post) => followedIds.has(post.id)).length,
       pagesFetched:

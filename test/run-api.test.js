@@ -147,7 +147,6 @@ function baseStartResponses(insertResponse, activeRuns = []) {
   return [
     { data: activeRuns, error: null },
     { data: null, error: null },
-    { data: null, error: null },
     insertResponse,
   ];
 }
@@ -169,7 +168,9 @@ test("buildEffectiveSettings applies safe defaults and operating caps", () => {
   const defaults = buildEffectiveSettings(null);
   assert.equal(defaults.candidate_limit, 200);
   assert.equal(defaults.ai_input_limit, 100);
-  assert.equal(defaults.ranking_version, "views_v2");
+  assert.equal(defaults.ranking_version, "views_v3");
+  assert.equal(defaults.minimum_views, 50_000);
+  assert.equal(defaults.research_window_hours, 72);
   assert.match(defaults.x_query, /lang:en -is:retweet/);
   assert.deepEqual(defaults.followed_x_usernames, []);
   assert.ok(defaults.preferences.preferred_customers.length > 0);
@@ -285,6 +286,15 @@ test("startRun reports a newly dispatched manual run explicitly", async () => {
   assert.deepEqual(dispatches[0][1], [
     { runId: RUN_ID, ownerId: OWNER_ID },
   ]);
+  const insertOperation = admin.calls
+    .flatMap((query) => query.operations)
+    .find((operation) => operation.method === "insert");
+  const insertedRun = insertOperation.args[0];
+  assert.equal(
+    Date.parse(insertedRun.window_end) - Date.parse(insertedRun.window_start),
+    72 * 60 * 60 * 1_000,
+  );
+  assert.equal(insertedRun.settings_snapshot.minimum_views, 50_000);
   admin.assertExhausted();
 });
 
@@ -378,7 +388,6 @@ test("stale scheduled runs are closed before the same row is retried", async () 
   const retried = runRecord({ status: "queued", stage: "clustering" });
   const admin = createScriptedAdmin([
     { data: [staleRun], error: null },
-    { data: null, error: null },
     { data: null, error: null },
     { data: null, error: null },
     { data: null, error: { code: "23505" } },

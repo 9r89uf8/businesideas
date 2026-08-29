@@ -244,6 +244,8 @@ export async function fetchAndRank({ runId, ownerId }) {
     x_followed_returned: searchResult.meta.followedReturned,
     x_followed_quality_passed: searchResult.meta.followedQualityPassed,
     x_topic_returned: searchResult.meta.topicReturned,
+    x_topic_quality_passed: searchResult.meta.topicQualityPassed,
+    x_view_floor_passed: searchResult.meta.qualityPassed,
     x_cross_channel_duplicates: searchResult.meta.crossChannelDuplicates,
     x_metrics_captured_at: searchResult.meta.metricsCapturedAt,
     after_filtering: ranked.length,

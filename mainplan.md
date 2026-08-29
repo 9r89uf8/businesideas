@@ -23,7 +23,7 @@ Supabase Auth remains the authentication system and `OWNER_USER_ID` remains the 
 The editable topic query remains the broad discovery lane. Settings may also contain up to 12 X usernames for a preferred-account lane.
 
 1. Preferred-account search must still be constrained to AI-relevant language and exclude reposts.
-2. Preferred-account posts must pass the view-first reach and response-quality gate before selection.
+2. Preferred-account posts must pass the same 50,000-view eligibility floor as topic-discovery posts before selection.
 3. Qualifying preferred-account posts may fill at most half of the posts sent to signal extraction. This is a ceiling, not a quota.
 4. Topic discovery fills every unused slot. If preferred accounts have no qualifying posts, the run behaves like the topic-only pipeline.
 5. Both lanes share the deterministic ranking, deduplication, persisted candidate limit, evidence rules, and raw-content retention policy. The preferred-account probe may retrieve up to half the AI input limit in addition to the topic budget so preferred posts that fail quality never reduce topic discovery; no more than the configured candidate limit is retained or ranked.
@@ -45,14 +45,9 @@ For every candidate, calculate an age-adjusted logarithmic signal for views, com
 
 An all-zero metric contributes zero rather than a median percentile. X result position is retained for source inspection but does not contribute to quality.
 
-Preferred-account posts must also pass an absolute reach gate. With age clamped from two to 168 hours:
+Before ranking, every post from either discovery lane must have at least 50,000 raw views (`impression_count >= 50000`). This is a hard eligibility floor: comments, likes, and saves can rank posts that have already qualified, but cannot rescue a post below 50,000 views. A missing view count does not pass. The same threshold applies to preferred accounts so following an author never creates a quality exemption.
 
-```text
-adjusted views = views / age^0.55
-support = 4 × comments + likes + 0.25 × saves
-```
-
-The post passes when adjusted views are at least 750, or when adjusted views are at least 250 and support is at least 10. Age is measured at the start of the X metric fetch, including on workflow retries. A missing view count does not pass the preferred-account gate; topic discovery remains the fallback. Missing public metrics are stored as unavailable rather than silently presented as zero.
+Each run searches a fixed rolling 72-hour window ending at the run's X-safe end timestamp. The stored `window_start` and `window_end` are reused on workflow retries, and one metric-fetch timestamp is used consistently for ranking within each fetch attempt. Daily windows intentionally overlap; canonical post upserts, per-run snapshots, and downstream idea deduplication handle recurrence. Missing public metrics are stored as unavailable rather than silently presented as zero.
 
 ### Self-serve AI website opportunity contract
 
@@ -217,20 +212,14 @@ Vercel supports securing cron invocations through the `CRON_SECRET` environment 
 
 ## 4.2 Research window
 
-Use the last successful run to calculate the next window:
+Use a rolling three-day window for every scheduled and manual run:
 
 ```text
-start_time = previous successful window_end - 2 hours
-end_time   = current time
+end_time   = current time - 30 seconds
+start_time = end_time - 72 hours
 ```
 
-For the first run:
-
-```text
-start_time = current time - 24 hours
-```
-
-The two-hour overlap prevents gaps caused by delayed cron execution. Duplicate post IDs are harmless because posts are upserted.
+The small end lag avoids querying X's still-settling edge. Store both timestamps on the run and reuse them for every retry. Consecutive daily runs intentionally overlap so posts have enough time to accumulate the required reach. Duplicate post IDs are harmless because canonical posts are upserted and `run_posts` is unique per run.
 
 Cap the start time at seven days before the current time because X recent search covers the previous seven days. ([X Developer Platform][5])
 
@@ -377,6 +366,8 @@ comments = reply_count
 likes    = like_count
 saves    = bookmark_count
 ```
+
+First reject every candidate whose raw `impression_count` is missing or below 50,000. Apply this same hard floor to topic and preferred-account discovery. Engagement other than views does not override the floor.
 
 Repost and quote counts have no effect on application-controlled quality. Clamp post age at the metric-fetch timestamp to the range from two to 168 hours and calculate each signal as:
 
@@ -1723,6 +1714,7 @@ export const PIPELINE = {
   maxClusters: 8,
   maxGeneratedCandidates: 5,
   maxPublishedIdeas: 3,
+  researchWindowHours: 72,
 
   minimumCommercialScore: 50,
   maximumHypeScore: 75,
@@ -2126,6 +2118,8 @@ Use these defaults until real usage provides evidence to change them:
 | Setting                       |       Initial value |
 | ----------------------------- | ------------------: |
 | X candidates                  |                 200 |
+| X research window             |            72 hours |
+| Minimum qualifying views      |              50,000 |
 | Posts sent to Luna            |                 100 |
 | Luna requests                 |                   1 |
 | Maximum signals sent to Terra |                  70 |

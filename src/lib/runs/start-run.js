@@ -71,6 +71,8 @@ export function buildEffectiveSettings(settings) {
 
   return {
     ranking_version: POST_QUALITY.version,
+    minimum_views: POST_QUALITY.minimumViews,
+    research_window_hours: PIPELINE.researchWindowHours,
     x_query:
       typeof settings?.x_query === "string" && settings.x_query.trim()
         ? settings.x_query.trim()
@@ -193,23 +195,6 @@ async function loadEffectiveSettings(admin, ownerId) {
   }
 
   return buildEffectiveSettings(data);
-}
-
-async function loadPreviousWindowEnd(admin, ownerId) {
-  const { data, error } = await admin
-    .from("runs")
-    .select("window_end")
-    .eq("owner_id", ownerId)
-    .in("status", ["completed", "no_ideas"])
-    .order("window_end", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (error) {
-    throw new Error("The previous research window could not be loaded.");
-  }
-
-  return data?.window_end ?? null;
 }
 
 async function markDispatchFailure(admin, runId, ownerId) {
@@ -363,14 +348,11 @@ export async function startRun({
 
   await expireStaleRuns(admin, resolvedOwnerId, now);
 
-  const [settingsSnapshot, previousWindowEnd] = await Promise.all([
-    loadEffectiveSettings(admin, resolvedOwnerId),
-    loadPreviousWindowEnd(admin, resolvedOwnerId),
-  ]);
-  const window = getRecentSearchWindow({
-    previousWindowEnd: previousWindowEnd ?? undefined,
-    endTime: now,
-  });
+  const settingsSnapshot = await loadEffectiveSettings(
+    admin,
+    resolvedOwnerId,
+  );
+  const window = getRecentSearchWindow({ endTime: now });
   const runKey = createRunKey(trigger, now);
   const insert = {
     owner_id: resolvedOwnerId,

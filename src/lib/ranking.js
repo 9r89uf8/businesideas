@@ -233,28 +233,14 @@ export function qualitySignals(metrics = {}, ageInHours) {
   };
 }
 
-export function passesFollowedQualityGate(post, { now = new Date() } = {}) {
+/**
+ * A raw reach floor protects every ranking caller and every discovery lane.
+ * Secondary engagement can order eligible posts, but never waive this gate.
+ */
+export function passesPostQualityGate(post) {
   const values = qualityMetrics(metricsFor(post));
 
-  if (values.views === null) {
-    return false;
-  }
-
-  const age = postAgeInHours(post, now);
-  const adjustedViews =
-    values.views / age ** POST_QUALITY.ageExponent;
-  const support =
-    POST_QUALITY.followedGate.commentSupportWeight *
-      (values.comments ?? 0) +
-    POST_QUALITY.followedGate.likeSupportWeight * (values.likes ?? 0) +
-    POST_QUALITY.followedGate.saveSupportWeight * (values.saves ?? 0);
-
-  return (
-    adjustedViews >= POST_QUALITY.followedGate.strongAdjustedViews ||
-    (adjustedViews >=
-      POST_QUALITY.followedGate.supportedAdjustedViews &&
-      support >= POST_QUALITY.followedGate.minimumSupport)
-  );
+  return values.views !== null && values.views >= POST_QUALITY.minimumViews;
 }
 
 /**
@@ -342,7 +328,8 @@ export function rankPosts(
       [...text.trim()].length < MINIMUM_POST_LENGTH ||
       normalizedText.length === 0 ||
       isRepost(post) ||
-      hasObviousRepeatedPromotion(text)
+      hasObviousRepeatedPromotion(text) ||
+      !passesPostQualityGate(post)
     ) {
       return [];
     }

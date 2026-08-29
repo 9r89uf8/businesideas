@@ -26,6 +26,7 @@ const {
 const {
   buildFollowedAccountsQuery,
   getRecentSearchWindow,
+  isEligiblePost,
   isStrongFollowedPost,
   normalizeFollowedUsernames,
   searchHybridRecentPosts,
@@ -70,7 +71,7 @@ function makePost(index) {
     conversation_id: id,
     lang: "en",
     public_metrics: {
-      impression_count: index * 1_000,
+      impression_count: 50_000 + index * 1_000,
       reply_count: 3,
       like_count: index,
       bookmark_count: 4,
@@ -131,15 +132,14 @@ test("xRequest keeps credentials out of a rate-limit error", async () => {
   assert.equal(requestOptions.headers.Authorization, `Bearer ${TEST_TOKEN}`);
 });
 
-test("getRecentSearchWindow adds overlap and caps the recent-search boundary", () => {
+test("getRecentSearchWindow uses a rolling 72 hours and caps X's boundary", () => {
   assert.deepEqual(
     getRecentSearchWindow({
-      previousWindowEnd: "2026-08-27T09:00:00Z",
       endTime: "2026-08-27T13:00:00Z",
       currentTime: "2026-08-28T13:00:00Z",
     }),
     {
-      startTime: "2026-08-27T07:00:00Z",
+      startTime: "2026-08-24T13:00:00Z",
       endTime: "2026-08-27T13:00:00Z",
     },
   );
@@ -164,7 +164,7 @@ test("getRecentSearchWindow keeps end_time 30 seconds behind X", () => {
       currentTime: "2026-08-27T13:00:00Z",
     }),
     {
-      startTime: "2026-08-26T12:59:30Z",
+      startTime: "2026-08-24T12:59:30Z",
       endTime: "2026-08-27T12:59:30Z",
     },
   );
@@ -231,7 +231,7 @@ test("followed usernames are safely normalized, deduplicated, and capped", () =>
   assert.equal(buildFollowedAccountsQuery(["invalid handle!"]), null);
 });
 
-test("followed-account quality is view-first and ignores reposts and quotes", () => {
+test("every source uses the inclusive 50K view floor", () => {
   const now = "2026-08-27T13:00:00Z";
   const postWith = (publicMetrics) => ({
     created_at: "2026-08-27T11:00:00Z",
@@ -241,10 +241,10 @@ test("followed-account quality is view-first and ignores reposts and quotes", ()
   assert.equal(
     isStrongFollowedPost(
       postWith({
-        impression_count: 100,
-        reply_count: 0,
-        like_count: 1,
-        bookmark_count: 0,
+        impression_count: 49_999,
+        reply_count: 1_000_000,
+        like_count: 1_000_000,
+        bookmark_count: 1_000_000,
         retweet_count: 1_000_000,
         quote_count: 1_000_000,
       }),
@@ -255,7 +255,7 @@ test("followed-account quality is view-first and ignores reposts and quotes", ()
   assert.equal(
     isStrongFollowedPost(
       postWith({
-        impression_count: 1_100,
+        impression_count: 50_000,
         reply_count: 0,
         like_count: 0,
         bookmark_count: 0,
@@ -265,19 +265,7 @@ test("followed-account quality is view-first and ignores reposts and quotes", ()
     true,
   );
   assert.equal(
-    isStrongFollowedPost(
-      postWith({
-        impression_count: 500,
-        reply_count: 2,
-        like_count: 2,
-        bookmark_count: 0,
-      }),
-      { now },
-    ),
-    true,
-  );
-  assert.equal(
-    isStrongFollowedPost(
+    isEligiblePost(
       postWith({
         reply_count: 100,
         like_count: 1_000,
@@ -286,6 +274,10 @@ test("followed-account quality is view-first and ignores reposts and quotes", ()
       { now },
     ),
     false,
+  );
+  assert.equal(
+    isStrongFollowedPost(postWith({ impression_count: 50_000 }), { now }),
+    true,
   );
 });
 
@@ -319,7 +311,7 @@ test("hybrid search queries followed accounts first and keeps retained candidate
         posts[0] = {
           ...posts[0],
           public_metrics: {
-            impression_count: 100,
+            impression_count: 49_999,
             reply_count: 0,
             like_count: 1,
             bookmark_count: 0,
@@ -348,6 +340,8 @@ test("hybrid search queries followed accounts first and keeps retained candidate
   assert.equal(result.meta.followedQualityPassed, 4);
   assert.equal(result.meta.topicRequestedLimit, 6);
   assert.equal(result.meta.topicReturned, 4);
+  assert.equal(result.meta.topicQualityPassed, 4);
+  assert.equal(result.meta.qualityPassed, 8);
   assert.equal(result.meta.crossChannelDuplicates, 1);
   assert.equal(result.meta.metricsCapturedAt, "2026-08-27T13:00:00.000Z");
   assert.equal(result.posts.length, 9);
@@ -384,7 +378,7 @@ test("low-quality followed results never reduce the topic fallback budget", asyn
       if (followed) {
         for (const post of posts) {
           post.public_metrics = {
-            impression_count: 100,
+            impression_count: 49_999,
             reply_count: 0,
             like_count: 0,
             bookmark_count: 0,
@@ -405,10 +399,39 @@ test("low-quality followed results never reduce the topic fallback budget", asyn
   assert.equal(result.meta.followedQualityPassed, 0);
   assert.equal(result.meta.topicRequestedLimit, 20);
   assert.equal(result.meta.topicReturned, 20);
+  assert.equal(result.meta.topicQualityPassed, 20);
+  assert.equal(result.meta.qualityPassed, 20);
   assert.equal(result.meta.rawResultCount, 30);
   assert.equal(result.posts.length, 20);
   assert.equal(result.rankablePosts.length, 20);
   assert.ok(result.posts.every((post) => post.source_channel === "topic"));
+});
+
+test("hybrid search keeps sub-50K topic posts inspectable but not rankable", async () => {
+  const result = await searchHybridRecentPosts({
+    query: "AI problem lang:en -is:retweet",
+    startTime: "2026-08-24T13:00:00Z",
+    endTime: "2026-08-27T13:00:00Z",
+    qualityTime: "2026-08-27T13:00:00Z",
+    candidateLimit: 10,
+    aiInputLimit: 10,
+    fetchImpl: async () => {
+      const posts = [makePost(1), makePost(2)];
+      posts[0].public_metrics.impression_count = 7_000;
+      return jsonResponse({
+        data: posts,
+        includes: { users: [makeUser(1), makeUser(2)] },
+        meta: { result_count: posts.length },
+      });
+    },
+  });
+
+  assert.equal(result.posts.length, 2);
+  assert.equal(result.rankablePosts.length, 1);
+  assert.equal(result.meta.topicQualityPassed, 1);
+  assert.equal(result.meta.qualityPassed, 1);
+  assert.equal(result.posts.some((post) => post.id === "1001"), true);
+  assert.equal(result.rankablePosts.some((post) => post.id === "1001"), false);
 });
 
 test("hybrid search gives topic discovery the full budget when followed accounts are quiet", async () => {
@@ -517,7 +540,7 @@ test("searchRecentPosts requests two relevancy pages and normalizes IDs", async 
   assert.equal(result.posts[0].author_username, "author_1");
   assert.equal(result.posts[0].url, "https://x.com/author_1/status/1001");
   assert.deepEqual(result.posts[0].public_metrics, {
-    impression_count: 1_000,
+    impression_count: 51_000,
     reply_count: 3,
     like_count: 1,
     bookmark_count: 4,

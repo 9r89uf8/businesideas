@@ -39,7 +39,7 @@ function sourceLabel(channel) {
   return channel === "followed" ? "Followed account" : "Topic discovery";
 }
 
-function PostCard({ snapshot, rankingVersion }) {
+function PostCard({ snapshot, rankingVersion, minimumViews }) {
   const post = snapshot.post;
   const metrics = snapshot.metrics || {};
   const qualityMetrics = [
@@ -51,6 +51,11 @@ function PostCard({ snapshot, rankingVersion }) {
   const usesViewFirstRanking =
     rankingVersion === POST_QUALITY.version ||
     Object.hasOwn(metrics, "impression_count");
+  const usesCurrentViewFloor = rankingVersion === POST_QUALITY.version;
+  const viewCount = Number(metrics.impression_count);
+  const belowViewFloor =
+    usesCurrentViewFloor &&
+    (!Number.isFinite(viewCount) || viewCount < minimumViews);
 
   return (
     <article className="panel overflow-hidden">
@@ -65,6 +70,11 @@ function PostCard({ snapshot, rankingVersion }) {
         {snapshot.selected_for_ai && (
           <span className="rounded-full bg-[var(--amber)]/20 px-2.5 py-1 text-[0.68rem] font-bold text-[#77521d]">
             Sent to signal model
+          </span>
+        )}
+        {belowViewFloor && (
+          <span className="rounded-full bg-[var(--rose)]/10 px-2.5 py-1 text-[0.68rem] font-bold text-[#88483f]">
+            Below 50K floor · not eligible
           </span>
         )}
         {snapshot.relevant === true && (
@@ -145,7 +155,7 @@ function PostCard({ snapshot, rankingVersion }) {
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-3 text-[0.68rem] text-[var(--ink-soft)]">
           <span>Search position {snapshot.search_position ?? "—"}</span>
-          <span>{usesViewFirstRanking ? "View-first score" : "Legacy score"} {Number.isFinite(snapshot.deterministic_score) ? snapshot.deterministic_score.toFixed(2) : "—"}</span>
+          <span>{usesCurrentViewFloor ? "50K-qualified score" : usesViewFirstRanking ? "View-first score" : "Legacy score"} {Number.isFinite(snapshot.deterministic_score) ? snapshot.deterministic_score.toFixed(2) : "—"}</span>
         </div>
       </div>
     </article>
@@ -205,6 +215,13 @@ export default async function PostsPage({ searchParams }) {
   }
 
   const counts = selectedRun?.counts || {};
+  const usesCurrentViewFloor =
+    selectedRun?.settings_snapshot?.ranking_version === POST_QUALITY.version;
+  const minimumViews = Number.isFinite(
+    Number(selectedRun?.settings_snapshot?.minimum_views),
+  )
+    ? Number(selectedRun.settings_snapshot.minimum_views)
+    : POST_QUALITY.minimumViews;
   const followedSelected = Number(counts.sent_to_luna_followed) || 0;
   const topicSelected = Number(counts.sent_to_luna_topic) || 0;
 
@@ -215,7 +232,7 @@ export default async function PostsPage({ searchParams }) {
           <p className="eyebrow">Source feed</p>
           <h1 className="mt-2 text-4xl font-semibold tracking-[-0.055em] sm:text-5xl">See what the research actually read.</h1>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--ink-soft)]">
-            Inspect stored X posts, view-first quality metrics, selection decisions, and model-added signals. Raw post text is retained for up to 30 days.
+            Inspect stored X posts, view-first quality metrics, selection decisions, and model-added signals. New runs require at least 50K views; retrieved posts below that floor remain visible here only for auditing. Raw post text is retained for up to 30 days.
           </p>
         </div>
         <Link href="/settings#x-sources" className="focus-ring rounded-xl bg-[var(--ink)] px-4 py-3 text-sm font-bold text-white">
@@ -242,7 +259,7 @@ export default async function PostsPage({ searchParams }) {
         <label className="text-xs font-bold">
           Pipeline view
           <select name="view" defaultValue={view} className="focus-ring mt-1.5 w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2.5 text-sm font-normal outline-none">
-            <option value="all">All collected posts</option>
+            <option value="all">All retrieved (includes rejected)</option>
             <option value="selected">Sent to signal model</option>
             <option value="signals">Commercial signals</option>
           </select>
@@ -251,10 +268,14 @@ export default async function PostsPage({ searchParams }) {
       </form>
 
       {selectedRun && (
-        <section className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <section className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
           <div className="panel px-4 py-4">
             <p className="font-mono text-2xl font-semibold">{Number(counts.x_returned) || 0}</p>
             <p className="mt-1 text-xs font-semibold text-[var(--ink-soft)]">Collected</p>
+          </div>
+          <div className="panel px-4 py-4">
+            <p className="font-mono text-2xl font-semibold">{Number(usesCurrentViewFloor ? counts.x_view_floor_passed : counts.after_filtering) || 0}</p>
+            <p className="mt-1 text-xs font-semibold text-[var(--ink-soft)]">{usesCurrentViewFloor ? "50K qualified" : "After filtering"}</p>
           </div>
           <div className="panel px-4 py-4">
             <p className="font-mono text-2xl font-semibold">{followedSelected}</p>
@@ -287,6 +308,7 @@ export default async function PostsPage({ searchParams }) {
               key={snapshot.post_id}
               snapshot={snapshot}
               rankingVersion={selectedRun?.settings_snapshot?.ranking_version}
+              minimumViews={minimumViews}
             />
           ))}
         </section>

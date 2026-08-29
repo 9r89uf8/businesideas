@@ -171,7 +171,7 @@ export default function SettingsForm({ ownerId, initialSettings }) {
           </div>
           <div className="rounded-xl bg-white/75 p-4 text-xs leading-5 text-[var(--ink-soft)]">
             <p className="font-bold text-[var(--ink)]">Preferred, never forced</p>
-            <p className="mt-2">Their AI-related posts must clear a view-first gate using views, comments, likes, then saves. Reposts and quotes do not affect quality. Qualifying posts can fill at most half of the signal-model input; topic discovery fills the rest.</p>
+            <p className="mt-2">Every post must first reach 50K views, including posts from preferred accounts. Views, comments, likes, then saves rank the posts that qualify. Reposts and quotes do not affect quality. Preferred posts can fill at most half of the signal-model input; topic discovery fills the rest.</p>
           </div>
         </div>
 

@@ -10,6 +10,7 @@ import {
   hasObviousRepeatedPromotion,
   metricSignal,
   normalizePostText,
+  passesPostQualityGate,
   percentileRanks,
   postAgeInHours,
   qualityMetrics,
@@ -25,7 +26,7 @@ const NOW = new Date("2026-08-27T12:00:00.000Z");
 function candidate({
   id,
   author = "author-a",
-  views = 0,
+  views = 50_000,
   comments = 0,
   likes = 0,
   saves = 0,
@@ -134,11 +135,11 @@ test("handles percentile ties, empty pools, and singleton pools", () => {
 
 test("views dominate comments, which outrank likes and saves", () => {
   const reachWinner = rankPosts([
-    candidate({ id: "views", author: "views-author", views: 10_000 }),
+    candidate({ id: "views", author: "views-author", views: 100_000 }),
     candidate({
       id: "interactions",
       author: "interaction-author",
-      views: 100,
+      views: 50_000,
       comments: 10_000,
       likes: 10_000,
       saves: 10_000,
@@ -149,9 +150,9 @@ test("views dominate comments, which outrank likes and saves", () => {
   assert.ok(reachWinner[0].deterministic_score > reachWinner[1].deterministic_score);
 
   const secondaryOrder = rankPosts([
-    candidate({ id: "comments", author: "comment-author", views: 1_000, comments: 1 }),
-    candidate({ id: "likes", author: "like-author", views: 1_000, likes: 1 }),
-    candidate({ id: "saves", author: "save-author", views: 1_000, saves: 1 }),
+    candidate({ id: "comments", author: "comment-author", views: 50_000, comments: 1 }),
+    candidate({ id: "likes", author: "like-author", views: 50_000, likes: 1 }),
+    candidate({ id: "saves", author: "save-author", views: 50_000, saves: 1 }),
   ], { now: NOW });
 
   assert.deepEqual(
@@ -160,12 +161,40 @@ test("views dominate comments, which outrank likes and saves", () => {
   );
 });
 
+test("requires at least 50,000 raw views before any engagement ranking", () => {
+  const justBelow = candidate({
+    id: "just-below",
+    author: "below-author",
+    views: 49_999,
+    comments: 1_000_000,
+    likes: 1_000_000,
+    saves: 1_000_000,
+  });
+  const boundary = candidate({
+    id: "boundary",
+    author: "boundary-author",
+    views: 50_000,
+  });
+  const missing = candidate({ id: "missing", author: "missing-author" });
+  delete missing.public_metrics.impression_count;
+
+  assert.equal(passesPostQualityGate(justBelow), false);
+  assert.equal(passesPostQualityGate(boundary), true);
+  assert.equal(passesPostQualityGate(missing), false);
+  assert.deepEqual(
+    rankPosts([justBelow, boundary, missing], { now: NOW }).map(
+      (post) => post.id,
+    ),
+    ["boundary"],
+  );
+});
+
 test("repost, quote, and X result position never affect quality", () => {
   const ranked = rankPosts([
     candidate({
       id: "b-poison",
       author: "poison-author",
-      views: 1_000,
+      views: 50_000,
       comments: 5,
       likes: 20,
       saves: 2,
@@ -176,7 +205,7 @@ test("repost, quote, and X result position never affect quality", () => {
     candidate({
       id: "a-clean",
       author: "clean-author",
-      views: 1_000,
+      views: 50_000,
       comments: 5,
       likes: 20,
       saves: 2,
@@ -189,30 +218,30 @@ test("repost, quote, and X result position never affect quality", () => {
   assert.equal(ranked[0].view_signal, ranked[1].view_signal);
 });
 
-test("an all-zero metric pool receives no artificial quality credit", () => {
+test("posts without views are excluded instead of receiving quality credit", () => {
   const ranked = rankPosts([
-    candidate({ id: "zero-a", author: "zero-author-a" }),
-    candidate({ id: "zero-b", author: "zero-author-b" }),
+    candidate({ id: "zero-a", author: "zero-author-a", views: 0 }),
+    candidate({ id: "zero-b", author: "zero-author-b", views: 0 }),
   ], { now: NOW });
 
-  assert.ok(ranked.every((post) => post.deterministic_score === 0));
+  assert.deepEqual(ranked, []);
 });
 
 test("filters, deduplicates, ranks, and enforces three posts per author", () => {
   const duplicateText =
     "Accounting teams manually verify every AI summary before it reaches a client.";
   const posts = [
-    candidate({ id: "duplicate-low", views: 100, position: 1, text: duplicateText }),
+    candidate({ id: "duplicate-low", views: 50_000, position: 1, text: duplicateText }),
     candidate({
       id: "duplicate-high",
-      views: 10_000,
+      views: 100_000,
       position: 2,
       text: `${duplicateText} https://example.com/details`,
     }),
-    candidate({ id: "a-second", views: 8_000, position: 3 }),
-    candidate({ id: "a-third", views: 7_000, position: 4 }),
-    candidate({ id: "a-fourth", views: 6_000, position: 5 }),
-    candidate({ id: "other", author: "author-b", views: 5_000, position: 6 }),
+    candidate({ id: "a-second", views: 90_000, position: 3 }),
+    candidate({ id: "a-third", views: 80_000, position: 4 }),
+    candidate({ id: "a-fourth", views: 70_000, position: 5 }),
+    candidate({ id: "other", author: "author-b", views: 60_000, position: 6 }),
     candidate({ id: "short", text: "Too short" }),
     candidate({
       id: "repost",
