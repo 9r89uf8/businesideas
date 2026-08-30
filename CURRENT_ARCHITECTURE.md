@@ -1248,6 +1248,40 @@ Repository code alone cannot enable Supabase OAuth, connect a private plugin,
 or create a cloud schedule. The production flow is active only after the steps
 below are complete.
 
+### Current production activation status — August 30, 2026
+
+The application and remote-worker boundary are deployed and verified:
+
+- migration 003 is applied;
+- Supabase uses asymmetric ES256 signing;
+- the OAuth server, dynamic client registration, owner consent page, and custom
+  access-token hook are enabled;
+- the production MCP discovery route and three-tool server are reachable and
+  reject unauthenticated requests;
+- the personal `signal-foundry-research` plugin is installed locally;
+- Codex CLI OAuth succeeds with `openid email offline_access` and a native
+  numeric-loopback callback;
+- a controlled local Codex run claimed one job, performed public-web research,
+  submitted one result, and reached `research_jobs.status = completed` and
+  `runs.status = no_ideas` without an error;
+- the controlled run used retained legacy evidence only to verify transport and
+  finalization. It was not evidence that the current 50,000-view acquisition
+  policy had produced a job, and all synthetic test rows were deleted afterward.
+
+The unattended cloud worker is **not active** on the current personal Pro
+account. A fresh ChatGPT cloud task created after local plugin installation did
+not expose the skill or any of the three MCP tools. OpenAI currently documents
+full custom MCP apps with write actions for Business, Enterprise, and Edu
+workspaces, not personal Pro. The nonfunctional hourly heartbeat was deleted so
+it cannot create misleading failed runs.
+
+This limitation does not affect the Vercel ingestion workflow. Natural runs
+continue through X collection, ranking, Luna, and Terra. When a run clears the
+evidence gates it remains safely at `research_queued` until a connected worker
+claims it. The viable operator choices are to connect the MCP app in an eligible
+ChatGPT workspace, run the installed Codex worker from an available local host,
+or add a separately authorized API-backed worker.
+
 ### 1. Apply database migrations
 
 Apply every file in `supabase/migrations` in filename order, including:
@@ -1523,6 +1557,7 @@ These are current operating boundaries, not alternate execution paths.
 - [OpenAI scheduled tasks](https://learn.chatgpt.com/docs/automations?surface=app)
 - [OpenAI MCP server guidance](https://developers.openai.com/plugins/build/mcp-server)
 - [OpenAI plugin authentication guidance](https://developers.openai.com/plugins/build/auth)
+- [OpenAI developer mode and full MCP apps in ChatGPT](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt)
 - [Supabase MCP authentication](https://supabase.com/docs/guides/auth/oauth-server/mcp-authentication)
 - [Supabase OAuth server setup](https://supabase.com/docs/guides/auth/oauth-server/getting-started)
 - [Supabase OAuth token security](https://supabase.com/docs/guides/auth/oauth-server/token-security)
