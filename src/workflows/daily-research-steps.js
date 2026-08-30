@@ -1,24 +1,13 @@
 import { RetryableError } from "workflow";
 import { PIPELINE } from "../lib/config.js";
-import {
-  buildClusterFingerprint,
-  fingerprintIdea,
-} from "../lib/fingerprints.js";
-import {
-  duplicatesAcceptedIdea,
-  isSemanticIdeaDuplicate,
-  substantiallySame,
-} from "../lib/idea-deduplication.js";
+import { buildClusterFingerprint } from "../lib/fingerprints.js";
+import { substantiallySame } from "../lib/idea-deduplication.js";
 import { embedTexts } from "../lib/openai/embeddings.js";
 import { callStructured } from "../lib/openai/structured-response.js";
 import {
   CLUSTER_GENERATION_SCHEMA_NAME,
   clusterGenerationSchema,
 } from "../lib/ai-schemas/cluster-generation.js";
-import {
-  IDEA_GENERATION_SCHEMA_NAME,
-  ideaGenerationSchema,
-} from "../lib/ai-schemas/idea-generation.js";
 import {
   SIGNAL_EXTRACTION_SCHEMA_NAME,
   signalExtractionSchema,
@@ -27,7 +16,7 @@ import { buildClustersPrompt } from "../lib/prompts/build-clusters.js";
 import { buildExtractSignalsPrompt } from "../lib/prompts/extract-signals.js";
 import {
   boundIdeaGenerationClusters,
-  buildGenerateIdeasPrompt,
+  buildResearchJobPayload,
 } from "../lib/prompts/generate-ideas.js";
 import {
   calculateOpportunityScore,
@@ -36,9 +25,9 @@ import {
   selectSignals,
 } from "../lib/ranking.js";
 import { createSupabaseAdminClient } from "../lib/supabase/admin.js";
+import { hashResearchJson } from "../lib/research/canonical-json.js";
 import {
   validateLunaResponse,
-  validateSolResponse,
   validateTerraResponse,
 } from "../lib/validation.js";
 import { XApiError } from "../lib/x/client.js";
@@ -139,7 +128,15 @@ export async function fetchAndRank({ runId, ownerId }) {
   if (TERMINAL_RUN_STATUSES.has(run.status)) return [];
 
   if (
-    ["extracting", "clustering", "generating", "saving"].includes(run.stage) &&
+    [
+      "extracting",
+      "clustering",
+      "generating",
+      "research_queued",
+      "researching",
+      "validating",
+      "saving",
+    ].includes(run.stage) &&
     Number(run.counts?.sent_to_luna) >= 5
   ) {
     const { data, error } = await db
@@ -272,7 +269,7 @@ fetchAndRank.maxRetries = 3;
 async function loadSelectedPosts(db, runId, ownerId, selectedPostIds) {
   const { data: snapshots, error: snapshotsError } = await db
     .from("run_posts")
-    .select("post_id, deterministic_score, relevant, signal_type, target_customer, problem, evidence_excerpt, signal_summary, commercial_score, hype_score, opportunity_score")
+    .select("post_id, metrics, deterministic_score, relevant, signal_type, target_customer, problem, evidence_excerpt, signal_summary, commercial_score, hype_score, opportunity_score")
     .eq("run_id", runId)
     .eq("owner_id", ownerId)
     .eq("selected_for_ai", true)
@@ -281,7 +278,7 @@ async function loadSelectedPosts(db, runId, ownerId, selectedPostIds) {
 
   const { data: posts, error: postsError } = await db
     .from("posts")
-    .select("x_post_id, author_id, text")
+    .select("x_post_id, author_id, author_username, text, url, x_created_at")
     .eq("owner_id", ownerId)
     .in("x_post_id", selectedPostIds);
   throwDatabaseError(postsError, "loading selected posts");
@@ -291,6 +288,9 @@ async function loadSelectedPosts(db, runId, ownerId, selectedPostIds) {
     ...snapshot,
     id: snapshot.post_id,
     author_id: postsById.get(snapshot.post_id)?.author_id || "",
+    author_username: postsById.get(snapshot.post_id)?.author_username || null,
+    url: postsById.get(snapshot.post_id)?.url || null,
+    x_created_at: postsById.get(snapshot.post_id)?.x_created_at || null,
     text: postsById.get(snapshot.post_id)?.text || "",
   }));
 }
@@ -342,7 +342,16 @@ export async function extractSignals({ runId, ownerId, selectedPostIds }) {
   const run = await loadRun(db, runId, ownerId);
   if (TERMINAL_RUN_STATUSES.has(run.status)) return [];
 
-  if (["clustering", "generating", "saving"].includes(run.stage)) {
+  if (
+    [
+      "clustering",
+      "generating",
+      "research_queued",
+      "researching",
+      "validating",
+      "saving",
+    ].includes(run.stage)
+  ) {
     return recoverSignalCheckpoint(db, runId, ownerId, selectedPostIds);
   }
 
@@ -428,7 +437,15 @@ export async function buildClusters({ runId, ownerId, signalPostIds }) {
   const run = await loadRun(db, runId, ownerId);
   if (TERMINAL_RUN_STATUSES.has(run.status)) return [];
 
-  if (["generating", "saving"].includes(run.stage)) {
+  if (
+    [
+      "generating",
+      "research_queued",
+      "researching",
+      "validating",
+      "saving",
+    ].includes(run.stage)
+  ) {
     const { data, error } = await db
       .from("clusters")
       .select("id")
@@ -560,8 +577,12 @@ async function loadFinalEvidence(db, runId, ownerId, clusterIds) {
       .map((post) => ({
         post_id: post.post_id,
         author_id: post.author_id,
+        author_username: post.author_username,
+        url: post.url,
+        x_created_at: post.x_created_at,
         signal_type: post.signal_type,
         evidence_excerpt: post.evidence_excerpt || "",
+        metrics: post.metrics || {},
         opportunity_score: post.opportunity_score,
       })),
   })).filter((cluster) =>
@@ -577,24 +598,49 @@ async function loadFinalEvidence(db, runId, ownerId, clusterIds) {
   return { clusters: promptClusters, runPosts, byId };
 }
 
-export async function generateDeduplicateAndSave({ runId, ownerId, clusterIds }) {
+export async function prepareResearchJob({ runId, ownerId, clusterIds }) {
   "use step";
 
   requireWorkflowArgs({ runId, ownerId });
   const db = createSupabaseAdminClient();
   const run = await loadRun(db, runId, ownerId);
-  if (run.status === "completed") {
+  if (TERMINAL_RUN_STATUSES.has(run.status)) return null;
+
+  if (
+    ["research_queued", "researching", "validating", "saving"].includes(
+      run.stage,
+    )
+  ) {
     const { data, error } = await db
-      .from("ideas")
-      .select("id")
+      .from("research_jobs")
+      .select("id, schema_version, prompt_version, payload, payload_hash")
       .eq("run_id", runId)
       .eq("owner_id", ownerId)
-      .order("rank", { ascending: true });
-    throwDatabaseError(error, "recovering the published-idea checkpoint");
-    return (data || []).map((idea) => idea.id);
+      .maybeSingle();
+    throwDatabaseError(error, "recovering the research-job checkpoint");
+    if (data?.id) {
+      if (run.status === "queued") {
+        const { error: restoreError } = await db.rpc("persist_research_job", {
+          p_owner_id: ownerId,
+          p_run_id: runId,
+          p_schema_version: data.schema_version,
+          p_prompt_version: data.prompt_version,
+          p_payload: data.payload,
+          p_payload_hash: data.payload_hash,
+          p_counts: run.counts || {},
+          p_usage: run.usage || {},
+        });
+        throwDatabaseError(restoreError, "restoring the research-job checkpoint");
+      }
+      return data.id;
+    }
+    throw new Error("The committed research-job checkpoint is incomplete.");
   }
-  if (TERMINAL_RUN_STATUSES.has(run.status)) return [];
-  await updateRun(db, runId, ownerId, { status: "running", stage: "generating" });
+
+  await updateRun(db, runId, ownerId, {
+    status: "running",
+    stage: "generating",
+  });
 
   const evidence = await loadFinalEvidence(db, runId, ownerId, clusterIds);
   if (!evidence.clusters.length) {
@@ -602,7 +648,7 @@ export async function generateDeduplicateAndSave({ runId, ownerId, clusterIds })
       ...(run.counts || {}),
       eligible_clusters: 0,
     });
-    return [];
+    return null;
   }
   const boundedClusters = boundIdeaGenerationClusters(evidence.clusters);
 
@@ -617,141 +663,38 @@ export async function generateDeduplicateAndSave({ runId, ownerId, clusterIds })
     boundedClusters,
     clusterEmbeddingResult.embeddings,
   );
-
-  const response = await callStructured({
-    model: PIPELINE.models.ideation,
-    reasoningEffort: PIPELINE.reasoning.ideation,
-    schemaName: IDEA_GENERATION_SCHEMA_NAME,
-    schema: ideaGenerationSchema,
-    input: buildGenerateIdeasPrompt({
-      clusters: boundedClusters,
-      preferences: run.settings_snapshot.preferences,
-      historicalIdeas,
-    }),
-    maxOutputTokens: 14_000,
+  const payload = buildResearchJobPayload({
+    runId,
+    researchAsOf: run.window_end,
+    clusters: boundedClusters,
+    preferences: run.settings_snapshot.preferences,
+    historicalIdeas,
   });
-  usage = mergeUsage(usage, "sol", response.usage);
-  const validated = validateSolResponse(
-    response.data,
-    boundedClusters,
-    evidence.runPosts,
-  );
-  const groundedCandidates = validated.ideas.filter((idea) => idea.publishable);
-
-  const fingerprinted = groundedCandidates.map((idea) => ({
-    ...idea,
-    ...fingerprintIdea(idea),
-  }));
-  const candidateEmbeddingResult = await embedTexts(
-    fingerprinted.map((idea) => idea.fingerprint),
-  );
-  usage = addEmbeddingUsage(usage, candidateEmbeddingResult.usage);
-
-  let exactHashes = new Set();
-  if (fingerprinted.length) {
-    const { data: exactMatches, error } = await db
-      .from("ideas")
-      .select("fingerprint_hash")
-      .eq("owner_id", ownerId)
-      .neq("run_id", runId)
-      .in("fingerprint_hash", fingerprinted.map((idea) => idea.fingerprint_hash));
-    throwDatabaseError(error, "checking exact idea duplicates");
-    exactHashes = new Set((exactMatches || []).map((idea) => idea.fingerprint_hash));
-  }
-
-  const accepted = [];
-  let duplicatesRemoved = 0;
-
-  for (let index = 0; index < fingerprinted.length; index += 1) {
-    const idea = fingerprinted[index];
-    const embedding = candidateEmbeddingResult.embeddings[index];
-    if (
-      exactHashes.has(idea.fingerprint_hash) ||
-      duplicatesAcceptedIdea(idea, embedding, accepted)
-    ) {
-      duplicatesRemoved += 1;
-      continue;
-    }
-
-    const { data: semanticMatches, error } = await db.rpc("match_ideas", {
-      p_owner_id: ownerId,
-      p_embedding: embedding,
-      p_exclude_run_id: runId,
-      p_limit: 8,
-    });
-    throwDatabaseError(error, "checking semantic idea duplicates");
-    const duplicate = (semanticMatches || []).some((match) =>
-      isSemanticIdeaDuplicate(idea, match, Number(match.similarity)),
-    );
-
-    if (duplicate) {
-      duplicatesRemoved += 1;
-      continue;
-    }
-
-    accepted.push({ ...idea, embedding });
-    exactHashes.add(idea.fingerprint_hash);
-    if (accepted.length >= PIPELINE.maxPublishedIdeas) break;
-  }
-
+  const payloadHash = hashResearchJson(payload);
   const counts = {
     ...(run.counts || {}),
     eligible_clusters: boundedClusters.length,
-    sol_candidates: groundedCandidates.length,
-    duplicates_removed: duplicatesRemoved,
-    ideas_saved: accepted.length,
+    research_jobs_queued: 1,
   };
-
-  if (!accepted.length) {
-    await finishWithoutIdeas(db, run, counts, usage);
-    return [];
-  }
-
-  await updateRun(db, runId, ownerId, { stage: "saving", counts, usage });
-  const ideaPayload = accepted.map((idea, index) => ({
-      rank: index + 1,
-      title: idea.title,
-      target_customer: idea.target_customer,
-      problem: idea.problem,
-      offer: idea.offer,
-      why_pay: idea.why_pay,
-      why_now: idea.why_now,
-      initial_price: idea.initial_price,
-      differentiation: idea.differentiation,
-      speed_to_first_revenue: idea.speed_to_first_revenue,
-      validation_plan: idea.validation_plan,
-      product_spec: idea.product_spec,
-      hard_filter_checks: idea.hard_filter_checks,
-      risks: idea.risks,
-      assumptions: idea.assumptions,
-      evidence_score: idea.evidence_score,
-      fingerprint: idea.fingerprint,
-      fingerprint_hash: idea.fingerprint_hash,
-      embedding: idea.embedding,
-    }));
-  const sourceRows = accepted.flatMap((idea) => {
-    return idea.source_post_ids.map((postId) => {
-      const source = evidence.byId.get(postId);
-      return {
-        fingerprint_hash: idea.fingerprint_hash,
-        post_id: postId,
-        signal_type: source.signal_type,
-        evidence_summary: source.signal_summary || source.problem,
-      };
-    });
-  });
-  const { data: published, error: publishError } = await db.rpc("publish_run_product_ideas", {
+  const { data, error } = await db.rpc("persist_research_job", {
     p_owner_id: ownerId,
     p_run_id: runId,
-    p_ideas: ideaPayload,
-    p_sources: sourceRows,
+    p_schema_version: PIPELINE.research.schemaVersion,
+    p_prompt_version: PIPELINE.research.promptVersion,
+    p_payload: payload,
+    p_payload_hash: payloadHash,
     p_counts: counts,
     p_usage: usage,
   });
-  throwDatabaseError(publishError, "publishing final ideas atomically");
-  return (published || []).map((idea) => idea.idea_id);
+  throwDatabaseError(error, "persisting the research job");
+
+  const jobId = data?.[0]?.research_job_id;
+  if (!UUID_PATTERN.test(jobId || "")) {
+    throw new Error("The research-job checkpoint did not return a job ID.");
+  }
+  return jobId;
 }
-generateDeduplicateAndSave.maxRetries = 3;
+prepareResearchJob.maxRetries = 3;
 
 export async function recordWorkflowFailure({ runId, ownerId, message }) {
   "use step";

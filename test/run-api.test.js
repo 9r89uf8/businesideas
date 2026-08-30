@@ -171,7 +171,7 @@ test("buildEffectiveSettings applies safe defaults and operating caps", () => {
   assert.equal(defaults.ranking_version, "views_v3");
   assert.equal(defaults.minimum_views, 50_000);
   assert.equal(defaults.research_window_hours, 72);
-  assert.match(defaults.x_query, /lang:en -is:retweet/);
+  assert.match(defaults.x_query, /lang:en -is:retweet -is:quote/);
   assert.deepEqual(defaults.followed_x_usernames, []);
   assert.ok(defaults.preferences.preferred_customers.length > 0);
 

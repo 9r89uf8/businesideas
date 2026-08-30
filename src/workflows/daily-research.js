@@ -2,7 +2,7 @@ import {
   buildClusters,
   extractSignals,
   fetchAndRank,
-  generateDeduplicateAndSave,
+  prepareResearchJob,
   recordWorkflowFailure,
 } from "./daily-research-steps.js";
 
@@ -44,14 +44,16 @@ export async function dailyResearch({ runId, ownerId }) {
   if (!clusterIds.length) return { status: "no_ideas" };
 
   try {
-    const ideaIds = await generateDeduplicateAndSave({
+    const jobId = await prepareResearchJob({
       runId,
       ownerId,
       clusterIds,
     });
-    return { status: ideaIds.length ? "completed" : "no_ideas", ideaIds };
+    return jobId
+      ? { status: "research_queued", jobId }
+      : { status: "no_ideas" };
   } catch {
-    const message = "Idea generation failed after retries.";
+    const message = "Research job preparation failed after retries.";
     await recordWorkflowFailure({ runId, ownerId, message });
     throw new Error(message);
   }

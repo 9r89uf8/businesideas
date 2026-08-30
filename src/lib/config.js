@@ -8,7 +8,7 @@ export const DEFAULT_X_QUERY = `(
   OR "need a tool" OR "wish there was" OR paying
   OR launched OR released
 )
-lang:en -is:retweet`;
+lang:en -is:retweet -is:quote`;
 
 export const DEFAULT_PREFERENCES = {
   offer_bias: "software_first",
@@ -112,13 +112,22 @@ export const PIPELINE = {
   models: {
     extraction: "gpt-5.6-luna",
     clustering: "gpt-5.6-terra",
-    ideation: "gpt-5.6-sol",
     embedding: "text-embedding-3-small",
   },
   reasoning: {
     extraction: "low",
     clustering: "medium",
-    ideation: "high",
+  },
+  research: {
+    schemaVersion: 1,
+    promptVersion: "scheduled_research_v1",
+    maxSources: 40,
+    maxSourcesPerIdea: 10,
+    maxClaimsPerIdea: 12,
+    maxResultBytes: 1024 * 1024,
+    leaseSeconds: 7200,
+    maxAttempts: 3,
+    validationRedriveSeconds: 1800,
   },
   maxCandidates: 200,
   defaultAiInputLimit: 100,

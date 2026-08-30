@@ -1,8 +1,10 @@
 # Project instructions
 
-- Read [`mainplan.md`](./mainplan.md) in full before planning work, installing dependencies, or changing application code. Treat it as the source of truth for product scope, architecture, technology choices, file structure, database schema, API routes, security rules, build order, exclusions, and acceptance criteria.
-- Follow the plan's JavaScript/JSX-only stack and its explicit version-one exclusions. Do not substitute technologies, add architectural layers, or advance to a later build phase unless the user explicitly requests it.
-- Keep changes within the user's requested scope and reference the relevant `mainplan.md` section(s) in implementation plans and handoffs. A setup- or dependency-only request does not authorize building product features.
+- [`CURRENT_ARCHITECTURE.md`](./CURRENT_ARCHITECTURE.md) records the implemented system as a factual baseline, not a roadmap. Verify behavior against the application code and migrations, and update the document when an architectural change makes it stale.
+- The scheduled research worker contract is versioned in [`integrations/signal-foundry-research/skills/signal-foundry-research/SKILL.md`](./integrations/signal-foundry-research/skills/signal-foundry-research/SKILL.md) and its [`result-contract.md`](./integrations/signal-foundry-research/skills/signal-foundry-research/references/result-contract.md). Keep those instructions aligned with the MCP tools, research schemas, validation code, and migration whenever that boundary changes.
+- Required production configuration that cannot be expressed in repository code is recorded in [`CURRENT_ARCHITECTURE.md`](./CURRENT_ARCHITECTURE.md#22-required-operator-setup). Do not represent the scheduled worker as operational until its deployed MCP OAuth connection and cloud schedule have been verified.
+- Keep application changes in the existing JavaScript/JSX stack unless the user explicitly requests a technology change.
+- Keep changes within the user's requested scope. A setup- or dependency-only request does not authorize building product features.
 - Never print, commit, or expose environment secrets. Only `NEXT_PUBLIC_*` values may be used in browser code; Supabase secret, OpenAI, X bearer, and cron credentials must remain server-only.
 
 <!-- BEGIN:nextjs-agent-rules -->

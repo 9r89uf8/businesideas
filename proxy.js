@@ -1,5 +1,9 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
+import {
+  buildLoginRedirectPath,
+  normalizePostLoginRedirect,
+} from "@/lib/auth-helpers";
 
 function publicSupabaseConfig() {
   return {
@@ -25,6 +29,8 @@ export async function proxy(request) {
   const pathname = request.nextUrl.pathname;
 
   if (
+    pathname === "/mcp" ||
+    pathname === "/.well-known/oauth-protected-resource" ||
     pathname.startsWith("/.well-known/workflow/") ||
     pathname.startsWith("/api/cron/")
   ) {
@@ -64,7 +70,10 @@ export async function proxy(request) {
   const { data } = await supabase.auth.getClaims();
   const userId = data?.claims?.sub;
   const isOwner = userId && userId === process.env.OWNER_USER_ID;
-  const isPublic = pathname === "/login" || pathname.startsWith("/auth/");
+  const isPublic =
+    pathname === "/login" ||
+    pathname === "/oauth/consent" ||
+    pathname.startsWith("/auth/");
   const isApi = pathname.startsWith("/api/");
 
   if (userId && !isOwner) {
@@ -73,15 +82,22 @@ export async function proxy(request) {
 
   if (!isOwner && !isPublic && !isApi) {
     const loginUrl = request.nextUrl.clone();
+    const destination = `${request.nextUrl.pathname}${request.nextUrl.search}`;
+    const loginPath = buildLoginRedirectPath(destination);
     loginUrl.pathname = "/login";
-    loginUrl.search = "";
+    loginUrl.search = new URL(loginPath, request.url).search;
     return copyAuthState(response, NextResponse.redirect(loginUrl));
   }
 
   if (isOwner && pathname === "/login") {
     const dashboardUrl = request.nextUrl.clone();
-    dashboardUrl.pathname = "/";
-    dashboardUrl.search = "";
+    const destination = normalizePostLoginRedirect(
+      request.nextUrl.searchParams.get("next"),
+    );
+    const resolvedDestination = new URL(destination, request.url);
+    dashboardUrl.pathname = resolvedDestination.pathname;
+    dashboardUrl.search = resolvedDestination.search;
+    dashboardUrl.hash = resolvedDestination.hash;
     return copyAuthState(response, NextResponse.redirect(dashboardUrl));
   }
 

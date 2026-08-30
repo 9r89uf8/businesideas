@@ -9,12 +9,92 @@ import {
   PIPELINE,
 } from "../config.js";
 
-export const IDEA_GENERATION_SCHEMA_NAME = "idea_generation";
+export const RESEARCH_SOURCE_TYPES = [
+  "competitor",
+  "competitor_pricing",
+  "customer_evidence",
+  "feasibility",
+  "distribution",
+  "latam_fit",
+  "risk",
+  "other",
+];
 
-export const ideaGenerationSchema = {
+export const RESEARCH_RESULT_SCHEMA_NAME = "research_result";
+export const IDEA_GENERATION_SCHEMA_NAME = RESEARCH_RESULT_SCHEMA_NAME;
+
+const nonemptyString = (maxLength) => ({
+  type: "string",
+  minLength: 1,
+  maxLength,
+});
+
+const researchSourceId = {
+  type: "string",
+  minLength: 1,
+  maxLength: 64,
+  pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+};
+
+const productSpec = {
   type: "object",
   additionalProperties: false,
   properties: {
+    archetype: { type: "string", enum: IDEA_PRODUCT_ARCHETYPES },
+    core_action: nonemptyString(1_000),
+    value_mechanisms: {
+      type: "array",
+      minItems: 1,
+      maxItems: 3,
+      uniqueItems: true,
+      items: { type: "string", enum: IDEA_VALUE_MECHANISMS },
+    },
+    delivery_mode: { type: "string", enum: IDEA_DELIVERY_MODES },
+    sales_motion: { type: "string", enum: IDEA_SALES_MOTIONS },
+    business_model: { type: "string", enum: IDEA_BUSINESS_MODELS },
+    mvp_scope: nonemptyString(2_000),
+    mvp_build_weeks: {
+      type: "integer",
+      minimum: 1,
+      maximum: 52,
+      description: `Honest solo-developer estimate; publication requires ${PIPELINE.minimumMvpBuildWeeks} to ${PIPELINE.maximumMvpBuildWeeks} weeks.`,
+    },
+    recurring_trigger: nonemptyString(1_000),
+    latam_fit: { type: "string", enum: IDEA_LATAM_FITS },
+    latam_rationale: nonemptyString(1_000),
+  },
+  required: [
+    "archetype",
+    "core_action",
+    "value_mechanisms",
+    "delivery_mode",
+    "sales_motion",
+    "business_model",
+    "mvp_scope",
+    "mvp_build_weeks",
+    "recurring_trigger",
+    "latam_fit",
+    "latam_rationale",
+  ],
+};
+
+const hardFilterChecks = {
+  type: "object",
+  additionalProperties: false,
+  properties: Object.fromEntries(
+    IDEA_HARD_FILTER_CHECKS.map((name) => [name, { type: "boolean" }]),
+  ),
+  required: IDEA_HARD_FILTER_CHECKS,
+};
+
+export const researchResultSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    schema_version: {
+      type: "integer",
+      enum: [PIPELINE.research.schemaVersion],
+    },
     assessment: {
       type: "object",
       additionalProperties: false,
@@ -23,9 +103,47 @@ export const ideaGenerationSchema = {
           type: "string",
           enum: ["insufficient", "weak", "moderate", "strong"],
         },
-        notes: { type: "string" },
+        notes: { type: "string", maxLength: 4_000 },
       },
       required: ["overall_evidence", "notes"],
+    },
+    sources: {
+      type: "array",
+      maxItems: PIPELINE.research.maxSources,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          source_id: researchSourceId,
+          url: nonemptyString(2_048),
+          title: nonemptyString(500),
+          publisher: {
+            type: ["string", "null"],
+            minLength: 1,
+            maxLength: 300,
+          },
+          published_at: { type: ["string", "null"], maxLength: 64 },
+          accessed_at: nonemptyString(64),
+          source_type: { type: "string", enum: RESEARCH_SOURCE_TYPES },
+          supported_claims: {
+            type: "array",
+            minItems: 1,
+            maxItems: 20,
+            uniqueItems: true,
+            items: nonemptyString(1_000),
+          },
+        },
+        required: [
+          "source_id",
+          "url",
+          "title",
+          "publisher",
+          "published_at",
+          "accessed_at",
+          "source_type",
+          "supported_claims",
+        ],
+      },
     },
     ideas: {
       type: "array",
@@ -39,137 +157,82 @@ export const ideaGenerationSchema = {
             minimum: 1,
             maximum: PIPELINE.maxGeneratedCandidates,
           },
-          title: { type: "string" },
-          target_customer: { type: "string" },
-          problem: { type: "string" },
-          offer: { type: "string" },
-          why_pay: { type: "string" },
-          why_now: { type: "string" },
-          initial_price: { type: "string" },
-          differentiation: { type: "string" },
-          speed_to_first_revenue: { type: "string" },
-          validation_plan: { type: "string" },
-          product_spec: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              archetype: {
-                type: "string",
-                enum: IDEA_PRODUCT_ARCHETYPES,
-                description:
-                  "Best-fit soft archetype. This is a classification, never a quota.",
-              },
-              core_action: {
-                type: "string",
-                description:
-                  "The specific action the website performs and concrete outcome it produces; not a generic conversation.",
-              },
-              value_mechanisms: {
-                type: "array",
-                minItems: 1,
-                maxItems: 3,
-                items: { type: "string", enum: IDEA_VALUE_MECHANISMS },
-              },
-              delivery_mode: {
-                type: "string",
-                enum: IDEA_DELIVERY_MODES,
-              },
-              sales_motion: {
-                type: "string",
-                enum: IDEA_SALES_MOTIONS,
-              },
-              business_model: {
-                type: "string",
-                enum: IDEA_BUSINESS_MODELS,
-              },
-              mvp_scope: {
-                type: "string",
-                description:
-                  "A narrow description of what the first build includes and excludes.",
-              },
-              mvp_build_weeks: {
-                type: "integer",
-                minimum: 1,
-                maximum: 52,
-                description: `Honest solo-developer MVP estimate. Publication requires ${PIPELINE.minimumMvpBuildWeeks} to ${PIPELINE.maximumMvpBuildWeeks} weeks.`,
-              },
-              recurring_trigger: {
-                type: "string",
-                description:
-                  "A concrete event or workflow that repeatedly causes the customer to return.",
-              },
-              latam_fit: {
-                type: "string",
-                enum: IDEA_LATAM_FITS,
-                description:
-                  "A soft market/design fit classification, not evidence unless supplied posts explicitly support it.",
-              },
-              latam_rationale: {
-                type: "string",
-                description:
-                  "Why LATAM is or is not a plausible wedge without relying on translation as the product.",
-              },
-            },
-            required: [
-              "archetype",
-              "core_action",
-              "value_mechanisms",
-              "delivery_mode",
-              "sales_motion",
-              "business_model",
-              "mvp_scope",
-              "mvp_build_weeks",
-              "recurring_trigger",
-              "latam_fit",
-              "latam_rationale",
-            ],
-          },
-          hard_filter_checks: {
-            type: "object",
-            additionalProperties: false,
-            properties: Object.fromEntries(
-              IDEA_HARD_FILTER_CHECKS.map((name) => [
-                name,
-                {
-                  type: "boolean",
-                  description:
-                    "True only when the candidate itself satisfies this hard publication rule.",
-                },
-              ]),
-            ),
-            required: IDEA_HARD_FILTER_CHECKS,
-          },
+          cluster_id: nonemptyString(64),
+          title: nonemptyString(200),
+          target_customer: nonemptyString(500),
+          problem: nonemptyString(2_000),
+          offer: nonemptyString(2_000),
+          why_pay: nonemptyString(2_000),
+          why_now: nonemptyString(2_000),
+          initial_price: nonemptyString(500),
+          differentiation: nonemptyString(2_000),
+          speed_to_first_revenue: nonemptyString(1_000),
+          validation_plan: nonemptyString(2_000),
+          product_spec: productSpec,
+          hard_filter_checks: hardFilterChecks,
           risks: {
             type: "array",
             minItems: 1,
             maxItems: 5,
-            items: { type: "string" },
+            uniqueItems: true,
+            items: nonemptyString(1_000),
           },
           assumptions: {
             type: "array",
             minItems: 1,
             maxItems: 5,
-            items: { type: "string" },
+            uniqueItems: true,
+            items: nonemptyString(1_000),
           },
           evidence_score: {
             type: "integer",
             minimum: 0,
             maximum: 100,
             description:
-              "Strength of the supplied X evidence on the full 0-to-100 scale, never 0-to-10 or 0-to-1: 0 unsupported, 25 thin or ambiguous, 50 moderate recurring-problem support, 75 strong concrete multi-author support, and 100 exceptionally direct and consistent multi-author support. This is not model confidence or independently verified demand.",
+              "Strength of supplied X evidence only on the full 0-to-100 scale, never 0-to-10 or 0-to-1: 0 unsupported, 25 thin or ambiguous, 50 moderate, 75 strong multi-author support, and 100 exceptionally direct and consistent support. This is not model confidence, and external research must not increase it.",
           },
           source_post_ids: {
             type: "array",
             minItems: PIPELINE.minimumEvidencePosts,
             maxItems: 5,
+            uniqueItems: true,
             items: {
               type: "string",
+              maxLength: 32,
               pattern: "^[0-9]+$",
+            },
+          },
+          research_source_ids: {
+            type: "array",
+            minItems: 1,
+            maxItems: PIPELINE.research.maxSourcesPerIdea,
+            uniqueItems: true,
+            items: researchSourceId,
+          },
+          claim_source_map: {
+            type: "array",
+            minItems: 1,
+            maxItems: PIPELINE.research.maxClaimsPerIdea,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                claim: nonemptyString(1_000),
+                research_source_ids: {
+                  type: "array",
+                  minItems: 1,
+                  maxItems: PIPELINE.research.maxSourcesPerIdea,
+                  uniqueItems: true,
+                  items: researchSourceId,
+                },
+              },
+              required: ["claim", "research_source_ids"],
             },
           },
         },
         required: [
           "rank",
+          "cluster_id",
           "title",
           "target_customer",
           "problem",
@@ -186,11 +249,14 @@ export const ideaGenerationSchema = {
           "assumptions",
           "evidence_score",
           "source_post_ids",
+          "research_source_ids",
+          "claim_source_map",
         ],
       },
     },
   },
-  required: ["assessment", "ideas"],
+  required: ["schema_version", "assessment", "sources", "ideas"],
 };
 
-export default ideaGenerationSchema;
+export const ideaGenerationSchema = researchResultSchema;
+export default researchResultSchema;

@@ -24,6 +24,48 @@ export function normalizeAuthEmail(value) {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
+export function normalizeInternalRedirect(value, fallback = "/") {
+  const candidate = typeof value === "string" ? value.trim() : "";
+
+  if (
+    !candidate ||
+    candidate.length > 2_048 ||
+    !candidate.startsWith("/") ||
+    candidate.startsWith("//") ||
+    candidate.startsWith("/\\") ||
+    /[\u0000-\u001f\u007f]/.test(candidate)
+  ) {
+    return fallback;
+  }
+
+  try {
+    const base = new URL("https://internal.invalid");
+    const destination = new URL(candidate, base);
+    if (destination.origin !== base.origin) return fallback;
+
+    return `${destination.pathname}${destination.search}${destination.hash}`;
+  } catch {
+    return fallback;
+  }
+}
+
+export function normalizePostLoginRedirect(value) {
+  const destination = normalizeInternalRedirect(value);
+  const pathname = new URL(destination, "https://internal.invalid").pathname;
+
+  if (pathname === "/login" || pathname.startsWith("/auth/")) {
+    return "/";
+  }
+
+  return destination;
+}
+
+export function buildLoginRedirectPath(destination) {
+  const next = normalizePostLoginRedirect(destination);
+  const params = new URLSearchParams({ next });
+  return `/login?${params.toString()}`;
+}
+
 export function validatePasswordChange(password, confirmation) {
   if (typeof password !== "string" || !password) {
     return "Enter a new password.";

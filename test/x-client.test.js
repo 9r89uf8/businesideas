@@ -183,6 +183,11 @@ test("X normalization preserves views and saves without inventing missing counts
       retweet_count: 999,
       quote_count: 999,
     },
+    referenced_tweets: [
+      { type: "quoted", id: "111" },
+      { type: "replied_to", id: "222" },
+      { type: "unsupported", id: "333" },
+    ],
   });
 
   assert.deepEqual(normalized.public_metrics, {
@@ -191,6 +196,11 @@ test("X normalization preserves views and saves without inventing missing counts
     like_count: 120,
     bookmark_count: 14,
   });
+  assert.deepEqual(normalized.referenced_tweets, [
+    { type: "quoted", id: "111" },
+    { type: "replied_to", id: "222" },
+  ]);
+  assert.ok(X_POST_FIELDS.includes("referenced_tweets"));
 
   const missing = normalizeXPost({
     id: "789",
@@ -227,7 +237,7 @@ test("followed usernames are safely normalized, deduplicated, and capped", () =>
   assert.ok(maximumLengthQuery.length <= 512);
   assert.match(query, /^\(AI OR/);
   assert.match(query, /\(from:openai OR from:valid_user/);
-  assert.match(query, /-is:retweet$/);
+  assert.match(query, /-is:retweet -is:quote$/);
   assert.equal(buildFollowedAccountsQuery(["invalid handle!"]), null);
 });
 

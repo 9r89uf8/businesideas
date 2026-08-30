@@ -75,8 +75,12 @@ test("semantic duplicate checks use cosine similarity and matching commercial sc
 });
 
 test("workflow and vector RPC pass the current run exclusion together", () => {
-  const workflowSource = readFileSync(
+  const queueWorkflowSource = readFileSync(
     new URL("../src/workflows/daily-research-steps.js", import.meta.url),
+    "utf8",
+  );
+  const finalizerWorkflowSource = readFileSync(
+    new URL("../src/workflows/research-finalizer-steps.js", import.meta.url),
     "utf8",
   );
   const migrationSource = readFileSync(
@@ -84,9 +88,10 @@ test("workflow and vector RPC pass the current run exclusion together", () => {
     "utf8",
   );
 
+  assert.equal(queueWorkflowSource.match(/p_exclude_run_id: runId/g)?.length, 1);
   assert.equal(
-    workflowSource.match(/p_exclude_run_id: runId/g)?.length,
-    2,
+    finalizerWorkflowSource.match(/p_exclude_run_id: run\.id/g)?.length,
+    1,
   );
   assert.match(migrationSource, /p_exclude_run_id uuid/);
   assert.match(migrationSource, /i\.run_id <> p_exclude_run_id/);

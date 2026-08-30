@@ -141,6 +141,18 @@ export function isRepost(post) {
   return typeof post?.text === "string" && /^\s*RT\s+@/i.test(post.text);
 }
 
+export function isQuotePost(post) {
+  if (post?.is_quote === true || post?.isQuote === true) {
+    return true;
+  }
+
+  const references = post?.referenced_tweets ?? post?.referencedTweets;
+  return (
+    Array.isArray(references) &&
+    references.some((reference) => reference?.type === "quoted")
+  );
+}
+
 export function hasObviousRepeatedPromotion(text) {
   if (typeof text !== "string" || !PROMOTIONAL_LANGUAGE.test(text)) {
     return false;
@@ -328,6 +340,7 @@ export function rankPosts(
       [...text.trim()].length < MINIMUM_POST_LENGTH ||
       normalizedText.length === 0 ||
       isRepost(post) ||
+      isQuotePost(post) ||
       hasObviousRepeatedPromotion(text) ||
       !passesPostQualityGate(post)
     ) {

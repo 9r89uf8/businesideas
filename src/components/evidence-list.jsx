@@ -64,7 +64,7 @@ export default function EvidenceList({ sources }) {
               <a
                 href={post.url}
                 target="_blank"
-                rel="noreferrer"
+                rel="noopener noreferrer"
                 className="focus-ring mt-3 inline-flex rounded-md text-xs font-bold text-[var(--moss)] hover:underline"
               >
                 Open current post on X ↗

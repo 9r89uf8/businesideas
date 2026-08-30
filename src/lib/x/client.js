@@ -10,6 +10,7 @@ export const X_POST_FIELDS = Object.freeze([
   "conversation_id",
   "lang",
   "public_metrics",
+  "referenced_tweets",
 ]);
 
 export const X_EXPANSIONS = Object.freeze(["author_id"]);
@@ -221,6 +222,25 @@ export function normalizeXPost(post, usersById = new Map()) {
       : normalizeXId(post.conversation_id, "X conversation ID");
   const username = usersById.get(authorId)?.username ?? null;
   const metrics = post?.public_metrics ?? {};
+  const referencedTweets = Array.isArray(post?.referenced_tweets)
+    ? post.referenced_tweets.flatMap((reference) => {
+        if (
+          !reference ||
+          !["retweeted", "quoted", "replied_to"].includes(reference.type)
+        ) {
+          return [];
+        }
+
+        try {
+          return [{
+            type: reference.type,
+            id: normalizeXId(reference.id, "Referenced X post ID"),
+          }];
+        } catch {
+          return [];
+        }
+      })
+    : [];
 
   return {
     id,
@@ -230,6 +250,7 @@ export function normalizeXPost(post, usersById = new Map()) {
       typeof post?.created_at === "string" ? post.created_at : null,
     conversation_id: conversationId,
     lang: typeof post?.lang === "string" ? post.lang : null,
+    referenced_tweets: referencedTweets,
     public_metrics: {
       impression_count: normalizeMetric(metrics.impression_count),
       reply_count: normalizeMetric(metrics.reply_count),

@@ -218,6 +218,30 @@ test("repost, quote, and X result position never affect quality", () => {
   assert.equal(ranked[0].view_signal, ranked[1].view_signal);
 });
 
+test("reposts and quote posts are excluded even if a custom query returns them", () => {
+  const ranked = rankPosts([
+    candidate({
+      id: "repost-reference",
+      author: "repost-author",
+      views: 2_000_000,
+      referenced_tweets: [{ type: "retweeted", id: "1" }],
+    }),
+    candidate({
+      id: "quote-reference",
+      author: "quote-author",
+      views: 2_000_000,
+      referenced_tweets: [{ type: "quoted", id: "2" }],
+    }),
+    candidate({
+      id: "original",
+      author: "original-author",
+      views: 50_000,
+    }),
+  ], { now: NOW });
+
+  assert.deepEqual(ranked.map((post) => post.id), ["original"]);
+});
+
 test("posts without views are excluded instead of receiving quality credit", () => {
   const ranked = rankPosts([
     candidate({ id: "zero-a", author: "zero-author-a", views: 0 }),

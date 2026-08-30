@@ -1,0 +1,22 @@
+{
+  "name": "signal-foundry-research",
+  "version": "0.1.0",
+  "description": "Research one queued Signal Foundry opportunity job and return cited, structured candidates.",
+  "author": {
+    "name": "Signal Foundry"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Signal Foundry Research",
+    "shortDescription": "Research queued AI business signals.",
+    "longDescription": "Claims one bounded Signal Foundry job, researches its strongest X-backed problems on the public web, and submits cited candidates for server-side validation and deduplication.",
+    "developerName": "Signal Foundry",
+    "category": "Productivity",
+    "capabilities": ["Research", "Write"],
+    "websiteURL": "https://admins-projects-d500137d.vercel.app/",
+    "defaultPrompt": [
+      "Use $signal-foundry-research to process one queued job."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

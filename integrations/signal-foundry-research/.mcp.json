@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "signal-foundry": {
+      "type": "http",
+      "url": "https://admins-projects-d500137d.vercel.app/mcp",
+      "oauth_resource": "https://admins-projects-d500137d.vercel.app/mcp"
+    }
+  }
+}

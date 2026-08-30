@@ -4,9 +4,12 @@ import { test } from "node:test";
 
 import {
   buildRecoveryRedirectUrl,
+  buildLoginRedirectPath,
   classifyOwnerSession,
   MIN_OWNER_PASSWORD_LENGTH,
   normalizeAuthEmail,
+  normalizeInternalRedirect,
+  normalizePostLoginRedirect,
   OWNER_SESSION_STATUS,
   validatePasswordChange,
 } from "../src/lib/auth-helpers.js";
@@ -63,6 +66,30 @@ test("recovery links return the owner to the password section", () => {
   assert.equal(redirect.searchParams.get("next"), "/settings#access");
 });
 
+test("login return paths stay on the application origin", () => {
+  assert.equal(
+    normalizeInternalRedirect("/oauth/consent?authorization_id=request-123"),
+    "/oauth/consent?authorization_id=request-123",
+  );
+  assert.equal(normalizeInternalRedirect("https://attacker.example"), "/");
+  assert.equal(normalizeInternalRedirect("//attacker.example/path"), "/");
+  assert.equal(normalizeInternalRedirect("/\\attacker.example/path"), "/");
+  assert.equal(normalizePostLoginRedirect("/login?next=/login"), "/");
+  assert.equal(normalizePostLoginRedirect("/auth/callback"), "/");
+
+  const login = new URL(
+    buildLoginRedirectPath(
+      "/oauth/consent?authorization_id=request-123&source=codex",
+    ),
+    "https://signal-foundry.example",
+  );
+  assert.equal(login.pathname, "/login");
+  assert.equal(
+    login.searchParams.get("next"),
+    "/oauth/consent?authorization_id=request-123&source=codex",
+  );
+});
+
 test("auth forms preserve password-manager autocomplete contracts", async () => {
   const [loginSource, accessSource] = await Promise.all([
     readFile(new URL("../src/app/login/page.js", import.meta.url), "utf8"),
@@ -99,4 +126,7 @@ test("both the login handshake and route proxy clear non-owner sessions", async 
   assert.match(ownerSessionRoute, /signOut\(\{ scope: "local" \}\)/);
   assert.match(proxySource, /userId && !isOwner/);
   assert.match(proxySource, /signOut\(\{ scope: "local" \}\)/);
+  assert.match(proxySource, /pathname === "\/mcp"/);
+  assert.match(proxySource, /pathname === "\/oauth\/consent"/);
+  assert.match(proxySource, /buildLoginRedirectPath\(destination\)/);
 });

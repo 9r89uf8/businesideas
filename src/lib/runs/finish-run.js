@@ -14,6 +14,9 @@ const RUN_STAGES = new Set([
   "extracting",
   "clustering",
   "generating",
+  "research_queued",
+  "researching",
+  "validating",
   "saving",
 ]);
 const TERMINAL_STATUSES = new Set(["completed", "no_ideas", "failed"]);

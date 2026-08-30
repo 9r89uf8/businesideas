@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   buildRecoveryRedirectUrl,
   normalizeAuthEmail,
+  normalizePostLoginRedirect,
 } from "@/lib/auth-helpers";
 import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
 
@@ -14,10 +15,13 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [nextDestination, setNextDestination] = useState("/");
   const [state, setState] = useState(EMPTY_STATE);
 
   useEffect(() => {
-    const error = new URL(window.location.href).searchParams.get("error");
+    const params = new URL(window.location.href).searchParams;
+    const error = params.get("error");
+    setNextDestination(normalizePostLoginRedirect(params.get("next")));
     if (error) {
       setRecoveryOpen(true);
       setState({
@@ -82,7 +86,7 @@ export default function LoginPage() {
       return;
     }
 
-    window.location.replace("/");
+    window.location.replace(nextDestination);
   }
 
   async function requestMagicLink() {

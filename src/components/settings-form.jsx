@@ -204,7 +204,7 @@ export default function SettingsForm({ ownerId, initialSettings }) {
       <section className="panel p-5 sm:p-7">
         <p className="eyebrow">Commercial fit</p>
         <h2 className="mt-2 text-xl font-semibold tracking-[-0.03em]">Generation preferences</h2>
-        <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ink-soft)]">These guide Sol after evidence clears the cluster gates. They do not override weak evidence.</p>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ink-soft)]">These guide the scheduled research worker after evidence clears the cluster gates. They do not override weak evidence.</p>
 
         <div className="mt-6 grid gap-5">
           <label className="text-xs font-bold">

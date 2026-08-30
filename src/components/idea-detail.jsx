@@ -1,4 +1,5 @@
 import EvidenceList from "@/components/evidence-list";
+import ExternalResearchList from "@/components/external-research-list";
 import FeedbackControls from "@/components/feedback-controls";
 
 function Section({ label, children }) {
@@ -72,7 +73,14 @@ function ProductContract({ spec }) {
   );
 }
 
-export default function IdeaDetail({ idea, sources, feedback, evidenceNotice }) {
+export default function IdeaDetail({
+  idea,
+  sources,
+  researchSources,
+  feedback,
+  evidenceNotice,
+  researchNotice,
+}) {
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start">
       <div className="space-y-5">
@@ -124,6 +132,33 @@ export default function IdeaDetail({ idea, sources, feedback, evidenceNotice }) 
             </div>
           )}
           <div className="mt-5"><EvidenceList sources={sources} /></div>
+        </section>
+
+        <section className="panel p-5 sm:p-7">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <p className="eyebrow">External market research</p>
+              <h2 className="mt-2 text-xl font-semibold tracking-[-0.03em]">
+                What the scheduled research verified
+              </h2>
+            </div>
+            <p className="max-w-xs text-right text-xs leading-5 text-[var(--ink-soft)]">
+              These links support market, pricing, feasibility, competition, or
+              distribution claims. Model inferences remain listed separately as
+              assumptions.
+            </p>
+          </div>
+          {researchNotice && (
+            <div
+              role="status"
+              className="mt-5 rounded-xl border border-[var(--amber)]/35 bg-[var(--amber)]/10 px-4 py-3 text-xs leading-5 text-[#70552d]"
+            >
+              {researchNotice}
+            </div>
+          )}
+          <div className="mt-5">
+            <ExternalResearchList sources={researchSources} />
+          </div>
         </section>
       </div>
 

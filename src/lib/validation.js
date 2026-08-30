@@ -8,6 +8,8 @@ import {
   IDEA_VALUE_MECHANISMS,
   PIPELINE,
 } from "./config.js";
+import { RESEARCH_SOURCE_TYPES } from "./ai-schemas/idea-generation.js";
+import { normalizePublicResearchUrl } from "./research/public-url.js";
 
 const SIGNAL_TYPES = new Set([
   "pain",
@@ -449,7 +451,7 @@ function structurallyValidIdea(idea) {
  * meets the evidence, self-serve product, MVP, and hard-filter gates and is
  * capped at three.
  */
-export function validateSolResponse(
+function validateLegacyIdeaResponse(
   response,
   clusters,
   runPosts,
@@ -594,4 +596,509 @@ export function validateSolResponse(
     ideas: rankedIdeas,
     publishableIdeas,
   };
+}
+
+const RESEARCH_SOURCE_TYPE_SET = new Set(RESEARCH_SOURCE_TYPES);
+const RESEARCH_SOURCE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+const PRODUCT_SPEC_KEYS = [
+  "archetype",
+  "core_action",
+  "value_mechanisms",
+  "delivery_mode",
+  "sales_motion",
+  "business_model",
+  "mvp_scope",
+  "mvp_build_weeks",
+  "recurring_trigger",
+  "latam_fit",
+  "latam_rationale",
+];
+const RESEARCH_RESULT_KEYS = ["schema_version", "assessment", "sources", "ideas"];
+const RESEARCH_ASSESSMENT_KEYS = ["overall_evidence", "notes"];
+const RESEARCH_SOURCE_KEYS = [
+  "source_id",
+  "url",
+  "title",
+  "publisher",
+  "published_at",
+  "accessed_at",
+  "source_type",
+  "supported_claims",
+];
+const RESEARCH_IDEA_KEYS = [
+  "rank",
+  "cluster_id",
+  ...REQUIRED_IDEA_FIELDS,
+  "product_spec",
+  "hard_filter_checks",
+  "risks",
+  "assumptions",
+  "evidence_score",
+  "source_post_ids",
+  "research_source_ids",
+  "claim_source_map",
+];
+const CLAIM_SOURCE_MAP_KEYS = ["claim", "research_source_ids"];
+
+function hasExactKeys(value, keys) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const actual = Object.keys(value);
+  return actual.length === keys.length && actual.every((key) => keys.includes(key));
+}
+
+function boundedString(value, maximum, { allowEmpty = false } = {}) {
+  if (typeof value !== "string" || value.length > maximum) return null;
+  const normalized = value.trim();
+  return normalized || (allowEmpty ? "" : null);
+}
+
+function boundedStringArray(values, { minimum, maximum, stringMaximum }) {
+  if (
+    !Array.isArray(values) ||
+    values.length < minimum ||
+    values.length > maximum
+  ) {
+    return null;
+  }
+
+  const normalized = values.map((value) => boundedString(value, stringMaximum));
+  if (normalized.some((value) => value === null)) return null;
+  return new Set(normalized).size === normalized.length ? normalized : null;
+}
+
+function normalizeResearchSourceIds(values, { minimum = 1 } = {}) {
+  if (
+    !Array.isArray(values) ||
+    values.length < minimum ||
+    values.length > PIPELINE.research.maxSourcesPerIdea
+  ) {
+    return null;
+  }
+
+  const normalized = values.map((value) =>
+    typeof value === "string" ? value.trim() : "",
+  );
+  if (
+    normalized.some((value) => !RESEARCH_SOURCE_ID_PATTERN.test(value)) ||
+    new Set(normalized).size !== normalized.length
+  ) {
+    return null;
+  }
+  return normalized;
+}
+
+function normalizeResearchPostIds(values) {
+  if (
+    !Array.isArray(values) ||
+    values.length < PIPELINE.minimumEvidencePosts ||
+    values.length > 5
+  ) {
+    return null;
+  }
+  const normalized = values.map((value) =>
+    typeof value === "string" ? value.trim() : "",
+  );
+  if (
+    normalized.some((value) => !/^\d{1,32}$/.test(value)) ||
+    new Set(normalized).size !== normalized.length
+  ) {
+    return null;
+  }
+  return normalized;
+}
+
+function normalizeTimestamp(value, { nullable = false } = {}) {
+  if (nullable && (value === null || value === "")) return null;
+  if (typeof value !== "string" || value.length > 64) return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
+}
+
+function normalizeResearchSource(source) {
+  if (!hasExactKeys(source, RESEARCH_SOURCE_KEYS)) return null;
+  const sourceId = boundedString(source.source_id, 64);
+  const url = normalizePublicResearchUrl(source.url);
+  const title = boundedString(source.title, 500);
+  const publisher =
+    source.publisher === null ? null : boundedString(source.publisher, 300);
+  const publishedAt = normalizeTimestamp(source.published_at, { nullable: true });
+  const accessedAt = normalizeTimestamp(source.accessed_at);
+  const claims = boundedStringArray(source.supported_claims, {
+    minimum: 1,
+    maximum: 20,
+    stringMaximum: 1_000,
+  });
+
+  if (
+    !sourceId ||
+    !RESEARCH_SOURCE_ID_PATTERN.test(sourceId) ||
+    !url ||
+    !title ||
+    (publisher === null && source.publisher !== null) ||
+    publishedAt === undefined ||
+    accessedAt === undefined ||
+    !RESEARCH_SOURCE_TYPE_SET.has(source.source_type) ||
+    !claims
+  ) {
+    return null;
+  }
+
+  return {
+    source_id: sourceId,
+    url,
+    title,
+    publisher,
+    published_at: publishedAt,
+    accessed_at: accessedAt,
+    source_type: source.source_type,
+    supported_claims: claims,
+  };
+}
+
+function normalizeClaimSourceMap(value) {
+  if (
+    !Array.isArray(value) ||
+    value.length < 1 ||
+    value.length > PIPELINE.research.maxClaimsPerIdea
+  ) {
+    return null;
+  }
+
+  const normalized = [];
+  const seenClaims = new Set();
+  for (const mapping of value) {
+    if (!hasExactKeys(mapping, CLAIM_SOURCE_MAP_KEYS)) return null;
+    const claim = boundedString(mapping.claim, 1_000);
+    const researchSourceIds = normalizeResearchSourceIds(
+      mapping.research_source_ids,
+    );
+    if (!claim || !researchSourceIds || seenClaims.has(claim)) return null;
+    seenClaims.add(claim);
+    normalized.push({ claim, research_source_ids: researchSourceIds });
+  }
+  return normalized;
+}
+
+function normalizeStrictResearchIdea(idea) {
+  if (
+    !hasExactKeys(idea, RESEARCH_IDEA_KEYS) ||
+    !hasExactKeys(idea.product_spec, PRODUCT_SPEC_KEYS) ||
+    !hasExactKeys(idea.hard_filter_checks, IDEA_HARD_FILTER_CHECKS) ||
+    !Number.isInteger(idea.rank) ||
+    idea.rank < 1 ||
+    idea.rank > PIPELINE.maxGeneratedCandidates ||
+    !isScore(idea.evidence_score)
+  ) {
+    return null;
+  }
+
+  const fields = Object.fromEntries(
+    REQUIRED_IDEA_FIELDS.map((key) => [
+      key,
+      boundedString(
+        idea[key],
+        key === "title"
+          ? 200
+          : ["target_customer", "initial_price"].includes(key)
+            ? 500
+            : key === "speed_to_first_revenue"
+              ? 1_000
+              : 2_000,
+      ),
+    ]),
+  );
+  const clusterId = boundedString(idea.cluster_id, 64);
+  const risks = boundedStringArray(idea.risks, {
+    minimum: 1,
+    maximum: 5,
+    stringMaximum: 1_000,
+  });
+  const assumptions = boundedStringArray(idea.assumptions, {
+    minimum: 1,
+    maximum: 5,
+    stringMaximum: 1_000,
+  });
+  const sourcePostIds = normalizeResearchPostIds(idea.source_post_ids);
+  const researchSourceIds = normalizeResearchSourceIds(
+    idea.research_source_ids,
+  );
+  const claimSourceMap = normalizeClaimSourceMap(idea.claim_source_map);
+
+  if (
+    Object.values(fields).some((value) => value === null) ||
+    !clusterId ||
+    !risks ||
+    !assumptions ||
+    sourcePostIds === null ||
+    !researchSourceIds ||
+    !claimSourceMap ||
+    !validProductSpec(idea.product_spec) ||
+    idea.product_spec.mvp_build_weeks > 52 ||
+    !validHardFilterChecks(idea.hard_filter_checks) ||
+    boundedString(idea.product_spec.core_action, 1_000) === null ||
+    boundedString(idea.product_spec.mvp_scope, 2_000) === null ||
+    boundedString(idea.product_spec.recurring_trigger, 1_000) === null ||
+    boundedString(idea.product_spec.latam_rationale, 1_000) === null
+  ) {
+    return null;
+  }
+
+  return {
+    ...idea,
+    ...fields,
+    cluster_id: clusterId,
+    risks,
+    assumptions,
+    product_spec: cleanProductSpec(idea.product_spec),
+    hard_filter_checks: Object.fromEntries(
+      IDEA_HARD_FILTER_CHECKS.map((name) => [
+        name,
+        idea.hard_filter_checks[name],
+      ]),
+    ),
+    source_post_ids: sourcePostIds,
+    research_source_ids: researchSourceIds,
+    claim_source_map: claimSourceMap,
+  };
+}
+
+export function validateResearchResultShape(response) {
+  let encodedSize;
+  try {
+    encodedSize = new TextEncoder().encode(JSON.stringify(response)).byteLength;
+  } catch {
+    throw new TypeError("Research result must be serializable JSON.");
+  }
+
+  if (encodedSize > PIPELINE.research.maxResultBytes) {
+    throw new RangeError("Research result exceeds the maximum allowed size.");
+  }
+  if (!hasExactKeys(response, RESEARCH_RESULT_KEYS)) {
+    throw new TypeError("Research result has an invalid root object.");
+  }
+  if (response.schema_version !== PIPELINE.research.schemaVersion) {
+    throw new TypeError("Research result uses an unsupported schema version.");
+  }
+  if (
+    !hasExactKeys(response.assessment, RESEARCH_ASSESSMENT_KEYS) ||
+    !OVERALL_EVIDENCE_VALUES.has(response.assessment.overall_evidence) ||
+    boundedString(response.assessment.notes, 4_000, { allowEmpty: true }) === null
+  ) {
+    throw new TypeError("Research result has an invalid assessment.");
+  }
+  if (
+    !Array.isArray(response.sources) ||
+    response.sources.length > PIPELINE.research.maxSources ||
+    !Array.isArray(response.ideas) ||
+    response.ideas.length > PIPELINE.maxGeneratedCandidates
+  ) {
+    throw new TypeError("Research result contains invalid source or idea arrays.");
+  }
+
+  const sources = response.sources.map(normalizeResearchSource);
+  if (sources.some((source) => source === null)) {
+    throw new TypeError("Research result contains an invalid external source.");
+  }
+  const sourceIds = sources.map((source) => source.source_id);
+  if (new Set(sourceIds).size !== sourceIds.length) {
+    throw new TypeError("Research result contains duplicate external source IDs.");
+  }
+  const sourceUrls = sources.map((source) => source.url);
+  if (new Set(sourceUrls).size !== sourceUrls.length) {
+    throw new TypeError("Research result contains duplicate external source URLs.");
+  }
+
+  const ideas = response.ideas.map(normalizeStrictResearchIdea);
+  if (ideas.some((idea) => idea === null)) {
+    throw new TypeError("Research result contains an invalid idea candidate.");
+  }
+  const ranks = ideas.map((idea) => idea.rank);
+  const sortedRanks = [...ranks].sort((left, right) => left - right);
+  if (sortedRanks.some((rank, index) => rank !== index + 1)) {
+    throw new TypeError("Research result idea ranks must be consecutive from one.");
+  }
+
+  return {
+    schema_version: response.schema_version,
+    assessment: {
+      overall_evidence: response.assessment.overall_evidence,
+      notes: response.assessment.notes.trim(),
+    },
+    sources,
+    ideas,
+  };
+}
+
+function createResearchClusterMap(payload) {
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    payload.schema_version !== PIPELINE.research.schemaVersion ||
+    payload.prompt_version !== PIPELINE.research.promptVersion ||
+    !Array.isArray(payload.clusters) ||
+    payload.clusters.length < 1 ||
+    payload.clusters.length > PIPELINE.maxClusters
+  ) {
+    throw new TypeError("Research job payload is invalid or unsupported.");
+  }
+
+  const clusters = new Map();
+  for (const cluster of payload.clusters) {
+    const clusterId = boundedString(cluster?.cluster_id, 64);
+    if (!clusterId || clusters.has(clusterId) || !Array.isArray(cluster.evidence)) {
+      throw new TypeError("Research job contains an invalid cluster.");
+    }
+    const sourceIds = new Set();
+    for (const evidence of cluster.evidence) {
+      const postId = recordId(evidence);
+      if (!postId || sourceIds.has(postId)) {
+        throw new TypeError("Research job contains invalid cluster evidence.");
+      }
+      sourceIds.add(postId);
+    }
+    if (sourceIds.size < PIPELINE.minimumEvidencePosts) {
+      throw new TypeError("Research job contains insufficient cluster evidence.");
+    }
+    clusters.set(clusterId, { cluster, sourceIds });
+  }
+  return clusters;
+}
+
+/**
+ * Validates a submitted scheduled-research result against its immutable job
+ * payload and current-run post records. It never fetches submitted URLs.
+ */
+export function validateResearchResult(
+  response,
+  jobPayload,
+  runPosts,
+  {
+    minimumEvidencePosts = PIPELINE.minimumEvidencePosts,
+    minimumEvidenceAuthors = PIPELINE.minimumEvidenceAuthors,
+    maxGeneratedCandidates = PIPELINE.maxGeneratedCandidates,
+    maxPublishedIdeas = PIPELINE.maxPublishedIdeas,
+  } = {},
+) {
+  const normalized = validateResearchResultShape(response);
+  const clustersById = createResearchClusterMap(jobPayload);
+  const postsById = createRecordMap(runPosts, "runPosts");
+  const researchSourcesById = new Map(
+    normalized.sources.map((source) => [source.source_id, source]),
+  );
+  const ideas = [];
+
+  for (const idea of normalized.ideas) {
+    const cluster = clustersById.get(idea.cluster_id);
+    if (!cluster) {
+      continue;
+    }
+    if (
+      idea.source_post_ids.some(
+        (postId) => !cluster.sourceIds.has(postId) || !postsById.has(postId),
+      )
+    ) {
+      continue;
+    }
+    if (
+      idea.research_source_ids.some(
+        (sourceId) => !researchSourcesById.has(sourceId),
+      )
+    ) {
+      continue;
+    }
+
+    const citedResearchIds = new Set(idea.research_source_ids);
+    const mappedResearchIds = new Set();
+    let claimMapIsValid = true;
+    for (const mapping of idea.claim_source_map) {
+      for (const sourceId of mapping.research_source_ids) {
+        if (!citedResearchIds.has(sourceId)) {
+          claimMapIsValid = false;
+          break;
+        }
+        const source = researchSourcesById.get(sourceId);
+        if (!source?.supported_claims.includes(mapping.claim)) {
+          claimMapIsValid = false;
+          break;
+        }
+        mappedResearchIds.add(sourceId);
+      }
+      if (!claimMapIsValid) break;
+    }
+    if (
+      !claimMapIsValid ||
+      [...citedResearchIds].some((sourceId) => !mappedResearchIds.has(sourceId))
+    ) {
+      continue;
+    }
+
+    const independentAuthorCount = new Set(
+      idea.source_post_ids
+        .map((postId) => authorId(postsById.get(postId)))
+        .filter(Boolean),
+    ).size;
+    const validationErrors = [];
+    if (idea.source_post_ids.length < minimumEvidencePosts) {
+      validationErrors.push("insufficient_posts");
+    }
+    if (independentAuthorCount < minimumEvidenceAuthors) {
+      validationErrors.push("insufficient_authors");
+    }
+    if (!PUBLISHABLE_OVERALL_EVIDENCE.has(normalized.assessment.overall_evidence)) {
+      validationErrors.push("weak_overall_evidence");
+    }
+    if (idea.evidence_score < PIPELINE.minimumIdeaEvidence) {
+      validationErrors.push("weak_idea_evidence");
+    }
+    if (idea.product_spec.delivery_mode !== "self_serve_web_app") {
+      validationErrors.push("not_self_serve_web_app");
+    }
+    if (!PUBLISHABLE_SALES_MOTIONS.has(idea.product_spec.sales_motion)) {
+      validationErrors.push("requires_sales_process");
+    }
+    if (
+      idea.product_spec.mvp_build_weeks < PIPELINE.minimumMvpBuildWeeks ||
+      idea.product_spec.mvp_build_weeks > PIPELINE.maximumMvpBuildWeeks
+    ) {
+      validationErrors.push("mvp_outside_2_to_6_weeks");
+    }
+    for (const check of IDEA_HARD_FILTER_CHECKS) {
+      if (!idea.hard_filter_checks[check]) {
+        validationErrors.push(`hard_filter_failed:${check}`);
+      }
+    }
+
+    ideas.push({
+      ...idea,
+      independent_author_count: independentAuthorCount,
+      publishable: validationErrors.length === 0,
+      validation_errors: validationErrors,
+    });
+  }
+
+  const effectiveMaxGenerated =
+    Number.isInteger(maxGeneratedCandidates) && maxGeneratedCandidates >= 0
+      ? maxGeneratedCandidates
+      : 0;
+  const effectiveMaxPublished =
+    Number.isInteger(maxPublishedIdeas) && maxPublishedIdeas >= 0
+      ? maxPublishedIdeas
+      : 0;
+  const rankedIdeas = ideas.sort(compareIdeas).slice(0, effectiveMaxGenerated);
+
+  return {
+    schema_version: normalized.schema_version,
+    assessment: normalized.assessment,
+    sources: normalized.sources,
+    ideas: rankedIdeas,
+    publishableIdeas: rankedIdeas
+      .filter((idea) => idea.publishable)
+      .slice(0, effectiveMaxPublished),
+  };
+}
+
+// Temporary compatibility alias for older tests and historical imports. New
+// production code must use validateResearchResult().
+export function validateSolResponse(...args) {
+  return validateLegacyIdeaResponse(...args);
 }

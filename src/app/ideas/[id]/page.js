@@ -87,6 +87,48 @@ export default async function IdeaDetailPage({ params }) {
     });
   }
 
+  const { data: researchLinks, error: researchLinksError } = await supabase
+    .from("idea_research_sources")
+    .select("research_source_id, supported_claims")
+    .eq("owner_id", ownerId)
+    .eq("idea_id", id);
+  const researchSourceIds = (researchLinks || []).map(
+    (link) => link.research_source_id,
+  );
+  let researchSources = [];
+  let researchNotice = researchLinksError
+    ? "The external-research links could not be loaded from the database."
+    : null;
+
+  if (researchSourceIds.length) {
+    const { data: sourceDetails, error: researchSourcesError } = await supabase
+      .from("research_sources")
+      .select(
+        "id, source_id, url, title, publisher, published_at, accessed_at, source_type, supported_claims",
+      )
+      .eq("owner_id", ownerId)
+      .in("id", researchSourceIds);
+
+    if (researchSourcesError) {
+      researchNotice =
+        "Some external-research details could not be loaded from the database.";
+    } else {
+      const linksBySourceId = new Map(
+        (researchLinks || []).map((link) => [
+          link.research_source_id,
+          link.supported_claims || [],
+        ]),
+      );
+      researchSources = (sourceDetails || []).map((source) => ({
+        ...source,
+        supported_claims:
+          linksBySourceId.get(source.id)?.length > 0
+            ? linksBySourceId.get(source.id)
+            : source.supported_claims,
+      }));
+    }
+  }
+
   const displayIdea = {
     target_customer: idea.target_customer,
     problem: idea.problem,
@@ -126,8 +168,10 @@ export default async function IdeaDetailPage({ params }) {
         <IdeaDetail
           idea={displayIdea}
           sources={sources}
+          researchSources={researchSources}
           feedback={feedback}
           evidenceNotice={evidenceNotice}
+          researchNotice={researchNotice}
         />
       </div>
     </main>

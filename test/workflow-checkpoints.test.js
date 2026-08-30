@@ -35,14 +35,27 @@ const workflowSource = readFileSync(
   new URL("../src/workflows/daily-research-steps.js", import.meta.url),
   "utf8",
 );
+const finalizerSource = readFileSync(
+  new URL("../src/workflows/research-finalizer-steps.js", import.meta.url),
+  "utf8",
+);
+const researchMigration = readFileSync(
+  new URL(
+    "../supabase/migrations/003_scheduled_research_worker.sql",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
-function functionBlock(name, nextMarker) {
-  const start = migration.indexOf(`create or replace function public.${name}(`);
-  const end = migration.indexOf(nextMarker, start);
+function functionBlock(name, nextMarker, source = migration) {
+  const start = source.lastIndexOf(
+    `create or replace function public.${name}(`,
+  );
+  const end = source.indexOf(nextMarker, start);
 
   assert.notEqual(start, -1, `${name} must exist in the migration`);
   assert.notEqual(end, -1, `${name} must have a bounded migration block`);
-  return migration.slice(start, end);
+  return source.slice(start, end);
 }
 
 test("checkpoint payloads contain only database-owned Luna and Terra fields", () => {
@@ -114,12 +127,22 @@ test("checkpoint payloads contain only database-owned Luna and Terra fields", ()
 test("Luna checkpoint is locked, atomic, idempotent, and service-role only", () => {
   const block = functionBlock(
     "persist_luna_checkpoint",
-    "-- Terra output, usage, counts",
+    "create or replace function public.persist_terra_checkpoint(",
+    researchMigration,
   );
 
   assert.match(block, /security invoker/i);
   assert.match(block, /for update/i);
-  assert.match(block, /current_stage in \('clustering', 'generating', 'saving'\)/i);
+  for (const stage of [
+    "clustering",
+    "generating",
+    "research_queued",
+    "researching",
+    "validating",
+    "saving",
+  ]) {
+    assert.match(block, new RegExp(`'${stage}'`));
+  }
   assert.match(block, /update public\.run_posts/i);
   assert.match(block, /update public\.runs/i);
   assert.ok(
@@ -133,7 +156,8 @@ test("Luna checkpoint is locked, atomic, idempotent, and service-role only", () 
 test("Terra checkpoint replaces clusters and advances the run in one lock", () => {
   const block = functionBlock(
     "persist_terra_checkpoint",
-    "-- Final publication is one transaction",
+    "commit;",
+    researchMigration,
   );
   const deleteIndex = block.indexOf("delete from public.clusters");
   const insertIndex = block.indexOf("insert into public.clusters");
@@ -141,7 +165,15 @@ test("Terra checkpoint replaces clusters and advances the run in one lock", () =
 
   assert.match(block, /security invoker/i);
   assert.match(block, /for update/i);
-  assert.match(block, /current_stage in \('generating', 'saving'\)/i);
+  for (const stage of [
+    "generating",
+    "research_queued",
+    "researching",
+    "validating",
+    "saving",
+  ]) {
+    assert.match(block, new RegExp(`'${stage}'`));
+  }
   assert.match(block, /if payload_count > 8 then/i);
   assert.ok(deleteIndex >= 0);
   assert.ok(deleteIndex < insertIndex);
@@ -155,7 +187,7 @@ test("workflow recovers committed stage checkpoints before provider calls", () =
   const extractionStart = workflowSource.indexOf("export async function extractSignals");
   const clusteringStart = workflowSource.indexOf("export async function buildClusters");
   const generationStart = workflowSource.indexOf(
-    "export async function generateDeduplicateAndSave",
+    "export async function prepareResearchJob",
   );
   const extraction = workflowSource.slice(extractionStart, clusteringStart);
   const clustering = workflowSource.slice(clusteringStart, generationStart);
@@ -180,10 +212,16 @@ test("final publication rejects null idea or source arrays before array access",
   assert.ok(nullGuardIndex < arrayLengthIndex);
 });
 
-test("product publication validates and persists the structured hard-gate contract atomically", () => {
-  assert.match(workflowSource, /db\.rpc\(\s*"publish_run_product_ideas"/);
-  assert.match(workflowSource, /product_spec: idea\.product_spec/);
-  assert.match(workflowSource, /hard_filter_checks: idea\.hard_filter_checks/);
+test("research queue and finalizer preserve the atomic hard-gate publication contract", () => {
+  assert.match(workflowSource, /db\.rpc\(\s*"persist_research_job"/);
+  assert.doesNotMatch(workflowSource, /models\.ideation|gpt-5\.6-sol/);
+  assert.match(finalizerSource, /db\.rpc\(\s*"begin_research_validation"/);
+  assert.match(finalizerSource, /db\.rpc\(\s*"publish_run_researched_ideas"/);
+  assert.match(finalizerSource, /product_spec: idea\.product_spec/);
+  assert.match(finalizerSource, /hard_filter_checks: idea\.hard_filter_checks/);
+  assert.match(finalizerSource, /research_candidates: groundedCandidates\.length/);
+  assert.match(finalizerSource, /acceptedResearchIds/);
+  assert.match(finalizerSource, /accepted\.length\s*\?\s*validated\.sources\.filter/);
 
   assert.match(additiveMigration, /create or replace function public\.publish_run_product_ideas/i);
   assert.match(additiveMigration, /delivery_mode}', ''\) <> 'self_serve_web_app'/i);
@@ -194,6 +232,24 @@ test("product publication validates and persists the structured hard-gate contra
   assert.match(additiveMigration, /hard_filter_checks = item -> 'hard_filter_checks'/i);
   assert.match(additiveMigration, /from public, anon, authenticated/i);
   assert.match(additiveMigration, /to service_role/i);
+
+  assert.match(researchMigration, /create or replace function public\.persist_research_job/i);
+  assert.match(researchMigration, /create or replace function public\.begin_research_validation/i);
+  assert.match(researchMigration, /create or replace function public\.publish_run_researched_ideas/i);
+  assert.match(researchMigration, /from public\.publish_run_product_ideas/i);
+  assert.match(researchMigration, /if jsonb_array_length\(p_ideas\) = 0 then/i);
+  assert.match(
+    researchMigration,
+    /if existing_job\.result is not null then[\s\S]*A failed research result cannot be reused/i,
+  );
+  assert.match(
+    researchMigration,
+    /return query select existing_job\.id, 'pending'::text;\s*return;/i,
+  );
+  assert.doesNotMatch(
+    researchMigration,
+    /if existing_job\.result is null then[\s\S]*set status = 'submitted'/i,
+  );
 });
 
 test("fetch retries replace the candidate snapshot instead of leaking stale source-feed rows", () => {

@@ -137,7 +137,7 @@ export function buildFollowedAccountsQuery(usernames) {
     .map((username) => `from:${username}`)
     .join(" OR ");
 
-  const query = `${FOLLOWED_AI_QUERY} (${authors}) -is:retweet`;
+  const query = `${FOLLOWED_AI_QUERY} (${authors}) -is:retweet -is:quote`;
 
   if (query.length > MAX_X_QUERY_LENGTH) {
     throw new RangeError("The followed-account X query exceeds 512 characters.");

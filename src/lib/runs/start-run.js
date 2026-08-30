@@ -17,8 +17,15 @@ import { dailyResearch } from "@/workflows/daily-research";
 
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
 const STALE_RUN_AGE_MS = 6 * 60 * 60 * 1_000;
+const STALE_RESEARCH_RUN_AGE_MS = 12 * 60 * 60 * 1_000;
+const EXTERNAL_RESEARCH_STAGES = new Set([
+  "research_queued",
+  "researching",
+  "validating",
+  "saving",
+]);
 const STALE_RUN_MESSAGE =
-  "This run was stopped after remaining active for more than six hours.";
+  "This run was stopped after remaining active beyond its allowed execution window.";
 const DISPATCH_FAILURE_MESSAGE =
   "The research workflow could not be started.";
 const RUN_SELECT =
@@ -141,15 +148,17 @@ export function isStaleRun(run, nowMs = Date.now()) {
       : run.created_at;
   const referenceMs = Date.parse(referenceValue);
 
-  return (
-    Number.isFinite(referenceMs) && nowMs - referenceMs > STALE_RUN_AGE_MS
-  );
+  const maximumAge = EXTERNAL_RESEARCH_STAGES.has(run.stage)
+    ? STALE_RESEARCH_RUN_AGE_MS
+    : STALE_RUN_AGE_MS;
+
+  return Number.isFinite(referenceMs) && nowMs - referenceMs > maximumAge;
 }
 
 async function expireStaleRuns(admin, ownerId, now) {
   const { data, error } = await admin
     .from("runs")
-    .select("id, status, created_at, started_at")
+    .select("id, status, stage, created_at, started_at")
     .eq("owner_id", ownerId)
     .in("status", ACTIVE_RUN_STATUSES);
 
@@ -157,14 +166,47 @@ async function expireStaleRuns(admin, ownerId, now) {
     throw new Error("Active research runs could not be checked.");
   }
 
-  const staleIds = (data ?? [])
-    .filter((run) => isStaleRun(run, now.getTime()))
-    .map((run) => run.id);
+  const staleRuns = (data ?? []).filter((run) =>
+    isStaleRun(run, now.getTime()),
+  );
+  const staleIds = staleRuns.map((run) => run.id);
 
   if (staleIds.length === 0) {
     return;
   }
 
+  const researchRunIds = staleRuns
+    .filter((run) => EXTERNAL_RESEARCH_STAGES.has(run.stage))
+    .map((run) => run.id);
+
+  if (researchRunIds.length) {
+    const { data: jobs, error: jobsError } = await admin
+      .from("research_jobs")
+      .select("id, run_id")
+      .eq("owner_id", ownerId)
+      .in("run_id", researchRunIds);
+
+    if (jobsError) {
+      throw new Error("Stale external research could not be checked.");
+    }
+
+    for (const job of jobs ?? []) {
+      const { error: failureError } = await admin.rpc("fail_research_job", {
+        p_owner_id: ownerId,
+        p_job_id: job.id,
+        p_error_message:
+          "The scheduled research job remained active for more than twelve hours.",
+      });
+      if (failureError) {
+        throw new Error("Stale external research could not be closed.");
+      }
+    }
+  }
+
+  // The job RPC normally closes its parent run. Apply the same guarded update
+  // to every stale run as a final synchronization step: it is a no-op for rows
+  // the RPC already terminalized and closes an inconsistent active run when
+  // its associated job was already completed or failed.
   const { error: updateError } = await admin
     .from("runs")
     .update({

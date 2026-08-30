@@ -10,13 +10,17 @@
     "test": "node --test"
   },
   "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
     "@supabase/ssr": "^0.12.5",
     "@supabase/supabase-js": "^2.112.4",
+    "jose": "^6.2.10",
+    "mcp-handler": "^2.1.1",
     "next": "16.3.3",
     "openai": "^7.7.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "workflow": "^4.8.5"
+    "workflow": "^4.8.5",
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
