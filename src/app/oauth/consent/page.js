@@ -16,6 +16,8 @@ const ERROR_MESSAGES = Object.freeze({
   invalid_request: "This authorization request is invalid or expired.",
   request_unavailable: "The authorization request could not be loaded.",
   invalid_redirect: "The authorization client supplied an unsafe redirect.",
+  unsupported_scopes: "The authorization client requested unsupported access.",
+  owner_mismatch: "This authorization request belongs to a different user.",
   request_not_allowed: "This authorization request is not allowed.",
   decision_failed: "The authorization decision could not be completed.",
 });
@@ -91,13 +93,17 @@ export default async function OAuthConsentPage({ searchParams }) {
     redirect(destination);
   }
 
-  if (
-    details.authorization_id !== authorizationId ||
-    details.user?.id !== identity.ownerId ||
-    !hasSupportedOAuthScopes(details.scope) ||
-    !normalizeOAuthRedirectUrl(details.redirect_uri)
-  ) {
+  if (details.authorization_id !== authorizationId) {
     return <ConsentError code="request_not_allowed" />;
+  }
+  if (details.user?.id !== identity.ownerId) {
+    return <ConsentError code="owner_mismatch" />;
+  }
+  if (!hasSupportedOAuthScopes(details.scope)) {
+    return <ConsentError code="unsupported_scopes" />;
+  }
+  if (!normalizeOAuthRedirectUrl(details.redirect_uri)) {
+    return <ConsentError code="invalid_redirect" />;
   }
 
   const scopes = splitOAuthScopes(details.scope);
