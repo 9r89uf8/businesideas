@@ -12,13 +12,19 @@ export function normalizeAuthorizationId(value) {
     : null;
 }
 
-function parseSecureRedirect(value) {
+function parseOAuthRedirect(value) {
   if (typeof value !== "string" || value.length > 4_096) return null;
 
   try {
     const url = new URL(value);
+    const isSecureWebRedirect = url.protocol === "https:";
+    const isNativeLoopbackRedirect =
+      url.protocol === "http:" &&
+      (url.hostname === "127.0.0.1" || url.hostname === "[::1]") &&
+      Boolean(url.port);
+
     if (
-      url.protocol !== "https:" ||
+      (!isSecureWebRedirect && !isNativeLoopbackRedirect) ||
       url.username ||
       url.password ||
       url.hash
@@ -32,11 +38,11 @@ function parseSecureRedirect(value) {
 }
 
 export function normalizeOAuthRedirectUrl(value, registeredRedirect) {
-  const destination = parseSecureRedirect(value);
+  const destination = parseOAuthRedirect(value);
   if (!destination) return null;
 
   if (registeredRedirect) {
-    const registered = parseSecureRedirect(registeredRedirect);
+    const registered = parseOAuthRedirect(registeredRedirect);
     if (
       !registered ||
       destination.origin !== registered.origin ||

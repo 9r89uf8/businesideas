@@ -729,8 +729,10 @@ The page preserves the authorization request through login, loads the client
 details from Supabase, shows the requested scopes and redirect host, and lets
 only the configured owner approve or deny the request.
 
-Redirects must be HTTPS, contain no credentials or fragment, and match the
-registered redirect path when the decision is completed.
+Redirects must use HTTPS except for native-client callbacks to the exact numeric
+loopback hosts `127.0.0.1` or `::1` with an explicit port. They may not contain
+credentials or a fragment, and must match the registered origin and path when
+the decision is completed.
 
 ### Bearer verification
 
