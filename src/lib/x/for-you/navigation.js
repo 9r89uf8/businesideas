@@ -5,6 +5,7 @@ const ALLOWED_X_HOSTNAMES = new Set([
   "www.twitter.com",
 ]);
 const ALLOWED_WORKFLOW_PATHS = Object.freeze([
+  /^\/$/,
   /^\/home\/?$/,
   /^\/login\/?$/,
   /^\/i\/flow\/login(?:\/|$)/,

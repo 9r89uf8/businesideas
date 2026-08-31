@@ -173,6 +173,7 @@ test("the Home phase accepts only the exact X Home path", () => {
   }
 
   for (const url of [
+    "https://x.com/",
     "https://x.com/Home",
     "https://x.com/home/timeline",
     "https://x.com/messages",

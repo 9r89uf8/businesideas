@@ -17,6 +17,7 @@ import {
 } from "../src/lib/x/for-you/login.js";
 import {
   installNavigationGuard,
+  isAllowedXWorkflowUrl,
   isAllowedXUrl,
   requireAllowedXPage,
   sanitizePageUrl,
@@ -425,6 +426,11 @@ test("navigation guard permits only the initial blank page before Home", async (
   const guard = await installNavigationGuard(page);
   assert.equal(guard.assertSafe(), true);
 
+  const rootRequest = await page.dispatchRequest("https://x.com/");
+  assert.deepEqual(rootRequest, { aborted: null, continued: true });
+  page.currentUrl = "https://x.com/";
+  assert.equal(guard.assertSafe(), true);
+
   const homeRequest = await page.dispatchRequest("https://x.com/home");
   assert.deepEqual(homeRequest, { aborted: null, continued: true });
   page.currentUrl = "https://x.com/home";
@@ -435,6 +441,19 @@ test("navigation guard permits only the initial blank page before Home", async (
     () => guard.assertSafe(),
     (error) => error?.code === "NAVIGATION_BLOCKED",
   );
+});
+
+test("workflow navigation allows only the exact X root landing path", () => {
+  assert.equal(isAllowedXWorkflowUrl("https://x.com/"), true);
+  assert.equal(isAllowedXWorkflowUrl("https://x.com"), true);
+
+  for (const url of [
+    "https://x.com//",
+    "https://x.com/messages",
+    "https://x.com.attacker.example/",
+  ]) {
+    assert.equal(isAllowedXWorkflowUrl(url), false, url);
+  }
 });
 
 test("approved actions reject external pages before acting and after navigation", async () => {
