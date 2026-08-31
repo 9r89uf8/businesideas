@@ -201,6 +201,8 @@ class FakePage {
     homeSettlesToBareRoot = false,
     loginSettlesToCombined = false,
     loginStaysOnRoot = false,
+    combinedSubmitDelayWaits = 0,
+    combinedSubmitNavigateOnWait = null,
   } = {}) {
     this.state = state;
     this.currentUrl = url;
@@ -216,6 +218,9 @@ class FakePage {
     this.homeSettlesToBareRoot = homeSettlesToBareRoot;
     this.loginSettlesToCombined = loginSettlesToCombined;
     this.loginStaysOnRoot = loginStaysOnRoot;
+    this.combinedSubmitDelayWaits = combinedSubmitDelayWaits;
+    this.combinedSubmitNavigateOnWait = combinedSubmitNavigateOnWait;
+    this.combinedSubmitWaits = 0;
     this.pendingHomeTransition = false;
     this.pendingLoginTransition = false;
     this.combinedIdentifierFilled = false;
@@ -303,7 +308,8 @@ class FakePage {
           isCombinedLoginPassword(spec) ||
           (isCombinedLoginSubmit(spec) &&
             this.combinedIdentifierFilled &&
-            this.combinedPasswordFilled)
+            this.combinedPasswordFilled &&
+            this.combinedSubmitWaits >= this.combinedSubmitDelayWaits)
         );
       case X_PAGE_STATES.USERNAME_REQUIRED:
         return (
@@ -361,6 +367,19 @@ class FakePage {
 
   async waitForTimeout(milliseconds) {
     this.waitCalls.push(milliseconds);
+    if (
+      this.state === X_PAGE_STATES.COMBINED_LOGIN_REQUIRED &&
+      this.combinedIdentifierFilled &&
+      this.combinedPasswordFilled
+    ) {
+      this.combinedSubmitWaits += 1;
+      if (
+        this.combinedSubmitWaits === 1 &&
+        this.combinedSubmitNavigateOnWait
+      ) {
+        this.currentUrl = this.combinedSubmitNavigateOnWait;
+      }
+    }
     if (this.pendingHomeTransition) {
       this.pendingHomeTransition = false;
       this.currentUrl = "https://x.com/";
@@ -842,6 +861,7 @@ test("root landing uses the exact combined login form once", async () => {
     state: X_PAGE_STATES.UNKNOWN,
     redirectHomeToRoot: true,
     combinedLoginRoute: true,
+    combinedSubmitDelayWaits: 2,
     submitState: X_PAGE_STATES.AUTHENTICATED,
   });
 
@@ -873,6 +893,75 @@ test("root landing uses the exact combined login form once", async () => {
     page.actions.filter((action) => action.type === "fill").map(({ value }) => value),
     [email, password],
   );
+  assert.deepEqual(page.waitCalls, [200, 200]);
+});
+
+test("permission revocation while the exact combined submit materializes never clicks", async () => {
+  const page = new FakePage({
+    state: X_PAGE_STATES.UNKNOWN,
+    redirectHomeToRoot: true,
+    combinedLoginRoute: true,
+    combinedSubmitDelayWaits: 10,
+  });
+
+  await assert.rejects(
+    ensureXAuthenticated(page, {
+      env: {
+        X_LOGIN_EMAIL: "collector@example.test",
+        X_LOGIN_PASSWORD: "synthetic-password",
+      },
+      stateTimeoutMs: 20,
+      assertPermissionActive() {
+        if (
+          page.combinedPasswordFilled &&
+          page.combinedSubmitWaits === 1
+        ) {
+          const error = new Error("permission revoked");
+          error.code = "FEATURE_DISABLED";
+          throw error;
+        }
+      },
+    }),
+    (error) => error?.code === "FEATURE_DISABLED",
+  );
+  assert.equal(
+    actionKinds(page).filter((action) => action === "click-login").length,
+    0,
+  );
+  assert.deepEqual(page.waitCalls, [200]);
+});
+
+test("combined submit route drift during materialization never clicks", async () => {
+  for (const combinedSubmitNavigateOnWait of [
+    "https://x.com/",
+    "https://x.com/i/flow/login",
+  ]) {
+    const page = new FakePage({
+      state: X_PAGE_STATES.UNKNOWN,
+      redirectHomeToRoot: true,
+      combinedLoginRoute: true,
+      combinedSubmitDelayWaits: 10,
+      combinedSubmitNavigateOnWait,
+    });
+
+    await assert.rejects(
+      ensureXAuthenticated(page, {
+        env: {
+          X_LOGIN_EMAIL: "collector@example.test",
+          X_LOGIN_PASSWORD: "synthetic-password",
+        },
+        stateTimeoutMs: 20,
+      }),
+      (error) => error?.code === "NAVIGATION_BLOCKED",
+      combinedSubmitNavigateOnWait,
+    );
+    assert.equal(
+      actionKinds(page).filter((action) => action === "click-login").length,
+      0,
+      combinedSubmitNavigateOnWait,
+    );
+    assert.deepEqual(page.waitCalls, [200], combinedSubmitNavigateOnWait);
+  }
 });
 
 test("non-exact root landings never enter credentials", async () => {

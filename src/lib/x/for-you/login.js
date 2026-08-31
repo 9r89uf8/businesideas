@@ -273,7 +273,12 @@ export async function ensureXAuthenticated(
       credentials.password,
     );
     assertPermissionActive();
-    await performReadOnlyAction(page, X_READ_ONLY_ACTIONS.CLICK_LOGIN_SUBMIT);
+    await performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.CLICK_LOGIN_SUBMIT,
+      undefined,
+      { assertPermissionActive },
+    );
     submittedCredentials = true;
   }
 
@@ -323,7 +328,12 @@ export async function ensureXAuthenticated(
       credentials.password,
     );
     assertPermissionActive();
-    await performReadOnlyAction(page, X_READ_ONLY_ACTIONS.CLICK_LOGIN_SUBMIT);
+    await performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.CLICK_LOGIN_SUBMIT,
+      undefined,
+      { assertPermissionActive },
+    );
   }
 
   state = await waitForXPageState(page, {

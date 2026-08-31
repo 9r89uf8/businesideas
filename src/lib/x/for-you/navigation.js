@@ -111,6 +111,18 @@ export function requireXLoginPage(page) {
   return currentUrl;
 }
 
+export function requireXCombinedLoginPage(page) {
+  const currentUrl = page.url();
+  if (!isAllowedXCombinedLoginUrl(currentUrl)) {
+    const error = new Error(
+      "The collector is not on the approved X combined login flow.",
+    );
+    error.code = "NAVIGATION_BLOCKED";
+    throw error;
+  }
+  return currentUrl;
+}
+
 export function requireXHomePage(page) {
   const currentUrl = requireAllowedXPage(page);
   if (!isAllowedXHomeUrl(currentUrl)) {

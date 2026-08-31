@@ -2,6 +2,7 @@ import { findVisibleLocator, X_LOCATORS } from "./locators.js";
 import {
   isAllowedXCombinedLoginUrl,
   requireAllowedXWorkflowPage,
+  requireXCombinedLoginPage,
   requireXHomePage,
   requireXLoginPage,
 } from "./navigation.js";
@@ -24,6 +25,8 @@ const LOGIN_ACTIONS = new Set([
   X_READ_ONLY_ACTIONS.FILL_LOGIN_PASSWORD,
   X_READ_ONLY_ACTIONS.CLICK_LOGIN_SUBMIT,
 ]);
+const DYNAMIC_CONTROL_POLL_INTERVAL_MS = 200;
+const DYNAMIC_CONTROL_MAX_POLLS = 26;
 
 function selectorDrift(action) {
   const error = new Error(`The approved UI control for ${action} is unavailable.`);
@@ -38,8 +41,31 @@ async function requireVisible(page, specs, action) {
   return match.locator;
 }
 
+async function requireMaterializedCombinedSubmit(
+  page,
+  action,
+  assertPermissionActive,
+) {
+  for (let poll = 0; poll < DYNAMIC_CONTROL_MAX_POLLS; poll += 1) {
+    await assertPermissionActive();
+    requireXCombinedLoginPage(page);
+    const root = await combinedLoginForm(page, action);
+    requireXCombinedLoginPage(page);
+    const match = await findVisibleLocator(root, X_LOCATORS.combinedLoginSubmit);
+    requireXCombinedLoginPage(page);
+    if (match) return match.locator;
+    if (poll + 1 < DYNAMIC_CONTROL_MAX_POLLS) {
+      await page.waitForTimeout(DYNAMIC_CONTROL_POLL_INTERVAL_MS);
+    }
+  }
+  throw selectorDrift(action);
+}
+
 async function combinedLoginForm(page, action) {
-  return requireVisible(page, X_LOCATORS.combinedLoginForm, action);
+  requireXCombinedLoginPage(page);
+  const form = await requireVisible(page, X_LOCATORS.combinedLoginForm, action);
+  requireXCombinedLoginPage(page);
+  return form;
 }
 
 /**
@@ -47,7 +73,12 @@ async function combinedLoginForm(page, action) {
  * no generic click/fill escape hatch and deliberately contains no timeline,
  * engagement, follow, bookmark, message, compose, or settings action.
  */
-export async function performReadOnlyAction(page, action, value) {
+export async function performReadOnlyAction(
+  page,
+  action,
+  value,
+  { assertPermissionActive = () => {} } = {},
+) {
   if (!ALLOWED_ACTIONS.has(action)) {
     const error = new Error("The requested browser action is not approved.");
     error.code = "ACTION_BLOCKED";
@@ -56,14 +87,17 @@ export async function performReadOnlyAction(page, action, value) {
 
   if (LOGIN_ACTIONS.has(action)) requireXLoginPage(page);
   else requireXHomePage(page);
+  const combinedLoginAction =
+    LOGIN_ACTIONS.has(action) && isAllowedXCombinedLoginUrl(page.url());
 
   switch (action) {
     case X_READ_ONLY_ACTIONS.FILL_LOGIN_IDENTIFIER: {
-      const combined = isAllowedXCombinedLoginUrl(page.url());
-      const root = combined ? await combinedLoginForm(page, action) : page;
+      const root = combinedLoginAction
+        ? await combinedLoginForm(page, action)
+        : page;
       const locator = await requireVisible(
         root,
-        combined
+        combinedLoginAction
           ? X_LOCATORS.combinedLoginIdentifier
           : X_LOCATORS.loginIdentifier,
         action,
@@ -86,26 +120,30 @@ export async function performReadOnlyAction(page, action, value) {
       break;
     }
     case X_READ_ONLY_ACTIONS.FILL_LOGIN_PASSWORD: {
-      const combined = isAllowedXCombinedLoginUrl(page.url());
-      const root = combined ? await combinedLoginForm(page, action) : page;
+      const root = combinedLoginAction
+        ? await combinedLoginForm(page, action)
+        : page;
       const locator = await requireVisible(
         root,
-        combined ? X_LOCATORS.combinedLoginPassword : X_LOCATORS.password,
+        combinedLoginAction
+          ? X_LOCATORS.combinedLoginPassword
+          : X_LOCATORS.password,
         action,
       );
       await locator.fill(String(value));
       break;
     }
     case X_READ_ONLY_ACTIONS.CLICK_LOGIN_SUBMIT: {
-      const combined = isAllowedXCombinedLoginUrl(page.url());
-      const root = combined ? await combinedLoginForm(page, action) : page;
-      const locator = await requireVisible(
-        root,
-        combined
-          ? X_LOCATORS.combinedLoginSubmit
-          : X_LOCATORS.loginSubmit,
-        action,
-      );
+      const locator = combinedLoginAction
+        ? await requireMaterializedCombinedSubmit(
+            page,
+            action,
+            assertPermissionActive,
+          )
+        : await requireVisible(page, X_LOCATORS.loginSubmit, action);
+      await assertPermissionActive();
+      if (combinedLoginAction) requireXCombinedLoginPage(page);
+      else requireXLoginPage(page);
       await locator.click();
       break;
     }
@@ -132,7 +170,8 @@ export async function performReadOnlyAction(page, action, value) {
   ) {
     requireAllowedXWorkflowPage(page);
   } else if (LOGIN_ACTIONS.has(action)) {
-    requireXLoginPage(page);
+    if (combinedLoginAction) requireXCombinedLoginPage(page);
+    else requireXLoginPage(page);
   } else {
     requireXHomePage(page);
   }
