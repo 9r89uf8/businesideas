@@ -75,6 +75,21 @@ function isCombinedLoginForm(spec) {
   );
 }
 
+function isCombinedLoginIdentifierForm(spec) {
+  return (
+    spec.kind === "css" &&
+    spec.selector ===
+      'form:has(input[name="username_or_email"][type="text"])'
+  );
+}
+
+function isCombinedLoginPasswordForm(spec) {
+  return (
+    spec.kind === "css" &&
+    spec.selector === 'form:has(input[name="password"][type="password"])'
+  );
+}
+
 function isCombinedLoginPassword(spec) {
   return (
     spec.kind === "css" &&
@@ -120,11 +135,34 @@ function isLoginSubmit(spec) {
   );
 }
 
-function isCombinedLoginSubmit(spec) {
+function isCombinedLoginContinue(spec) {
   return (
     spec.kind === "role" &&
     spec.role === "button" &&
     nameMatches(spec.name, "Continue")
+  );
+}
+
+function isLoginUsePassword(spec) {
+  return (
+    spec.kind === "role" &&
+    spec.role === "button" &&
+    nameMatches(spec.name, "Use password")
+  );
+}
+
+function isCombinedLoginSubmit(spec) {
+  return (
+    spec.kind === "role" &&
+    spec.role === "button" &&
+    (nameMatches(spec.name, "Log in") || nameMatches(spec.name, "Continue"))
+  );
+}
+
+function isOneTimeCode(spec) {
+  return (
+    spec.kind === "css" &&
+    spec.selector === 'input[autocomplete="one-time-code"]'
   );
 }
 
@@ -155,12 +193,18 @@ class FakeLocator {
       spec: this.spec,
       value,
       url: this.page.url(),
+      combinedPhase: this.page.combinedPhase,
     });
     this.page.afterFill(this.spec);
   }
 
   async click() {
-    this.page.actions.push({ type: "click", spec: this.spec, url: this.page.url() });
+    this.page.actions.push({
+      type: "click",
+      spec: this.spec,
+      url: this.page.url(),
+      combinedPhase: this.page.combinedPhase,
+    });
     this.page.afterClick(this.spec);
   }
 
@@ -202,6 +246,10 @@ class FakePage {
     homeSettlesToBareRoot = false,
     loginSettlesToCombined = false,
     loginStaysOnRoot = false,
+    combinedUsePasswordVisible = true,
+    combinedUsePasswordClickTransitions = true,
+    combinedUsePasswordDelayWaits = 0,
+    combinedUsePasswordNavigateOnWait = null,
     combinedSubmitDelayWaits = 0,
     combinedSubmitNavigateOnWait = null,
   } = {}) {
@@ -219,6 +267,13 @@ class FakePage {
     this.homeSettlesToBareRoot = homeSettlesToBareRoot;
     this.loginSettlesToCombined = loginSettlesToCombined;
     this.loginStaysOnRoot = loginStaysOnRoot;
+    this.combinedUsePasswordVisible = combinedUsePasswordVisible;
+    this.combinedUsePasswordClickTransitions =
+      combinedUsePasswordClickTransitions;
+    this.combinedUsePasswordDelayWaits = combinedUsePasswordDelayWaits;
+    this.combinedUsePasswordNavigateOnWait =
+      combinedUsePasswordNavigateOnWait;
+    this.combinedUsePasswordWaits = 0;
     this.combinedSubmitDelayWaits = combinedSubmitDelayWaits;
     this.combinedSubmitNavigateOnWait = combinedSubmitNavigateOnWait;
     this.combinedSubmitWaits = 0;
@@ -226,6 +281,11 @@ class FakePage {
     this.pendingLoginTransition = false;
     this.combinedIdentifierFilled = false;
     this.combinedPasswordFilled = false;
+    this.combinedPhase = state === X_PAGE_STATES.USE_PASSWORD_REQUIRED
+      ? "use-password"
+      : state === X_PAGE_STATES.COMBINED_LOGIN_REQUIRED
+        ? "identifier"
+        : null;
     this.actions = [];
     this.attributeReads = [];
     this.gotoCalls = [];
@@ -265,6 +325,7 @@ class FakePage {
       } else {
         this.currentUrl = "https://x.com/i/jf/onboarding/web?mode=login";
         this.state = X_PAGE_STATES.COMBINED_LOGIN_REQUIRED;
+        this.combinedPhase = "identifier";
       }
     } else {
       this.currentUrl = "https://x.com/i/flow/login";
@@ -305,12 +366,25 @@ class FakePage {
       case X_PAGE_STATES.COMBINED_LOGIN_REQUIRED:
         return (
           isCombinedLoginForm(spec) ||
+          isCombinedLoginIdentifierForm(spec) ||
+          isCombinedLoginPasswordForm(spec) ||
           isCombinedLoginIdentifier(spec) ||
           isCombinedLoginPassword(spec) ||
-          (isCombinedLoginSubmit(spec) &&
-            this.combinedIdentifierFilled &&
+          (this.combinedPhase === "identifier" &&
+            isCombinedLoginContinue(spec) &&
+            this.combinedIdentifierFilled) ||
+          (this.combinedPhase === "password" &&
+            isCombinedLoginSubmit(spec) &&
             this.combinedPasswordFilled &&
             this.combinedSubmitWaits >= this.combinedSubmitDelayWaits)
+        );
+      case X_PAGE_STATES.USE_PASSWORD_REQUIRED:
+        return (
+          (isLoginUsePassword(spec) &&
+            this.combinedUsePasswordVisible &&
+            this.combinedUsePasswordWaits >=
+              this.combinedUsePasswordDelayWaits) ||
+          isOneTimeCode(spec)
         );
       case X_PAGE_STATES.USERNAME_REQUIRED:
         return (
@@ -333,6 +407,26 @@ class FakePage {
   }
 
   afterClick(spec) {
+    if (
+      this.combinedPhase === "identifier" &&
+      isCombinedLoginContinue(spec)
+    ) {
+      this.state = X_PAGE_STATES.USE_PASSWORD_REQUIRED;
+      this.combinedPhase = "use-password";
+      return;
+    }
+
+    if (
+      this.combinedPhase === "use-password" &&
+      isLoginUsePassword(spec)
+    ) {
+      if (this.combinedUsePasswordClickTransitions) {
+        this.state = X_PAGE_STATES.COMBINED_LOGIN_REQUIRED;
+        this.combinedPhase = "password";
+      }
+      return;
+    }
+
     if (isLoginNext(spec)) {
       if (this.navigateExternallyOnNext) {
         this.currentUrl = "https://attacker.example/capture";
@@ -347,7 +441,10 @@ class FakePage {
       return;
     }
 
-    if (isLoginSubmit(spec) || isCombinedLoginSubmit(spec)) {
+    if (
+      isLoginSubmit(spec) ||
+      (this.combinedPhase === "password" && isCombinedLoginSubmit(spec))
+    ) {
       this.state = this.submitState;
       if (this.state === X_PAGE_STATES.AUTHENTICATED) {
         this.currentUrl = "https://x.com/home";
@@ -370,6 +467,7 @@ class FakePage {
     this.waitCalls.push(milliseconds);
     if (
       this.state === X_PAGE_STATES.COMBINED_LOGIN_REQUIRED &&
+      this.combinedPhase === "password" &&
       this.combinedIdentifierFilled &&
       this.combinedPasswordFilled
     ) {
@@ -381,6 +479,18 @@ class FakePage {
         this.currentUrl = this.combinedSubmitNavigateOnWait;
       }
     }
+    if (
+      this.state === X_PAGE_STATES.USE_PASSWORD_REQUIRED &&
+      this.combinedPhase === "use-password"
+    ) {
+      this.combinedUsePasswordWaits += 1;
+      if (
+        this.combinedUsePasswordWaits === 1 &&
+        this.combinedUsePasswordNavigateOnWait
+      ) {
+        this.currentUrl = this.combinedUsePasswordNavigateOnWait;
+      }
+    }
     if (this.pendingHomeTransition) {
       this.pendingHomeTransition = false;
       this.currentUrl = "https://x.com/";
@@ -389,6 +499,7 @@ class FakePage {
       this.pendingLoginTransition = false;
       this.currentUrl = "https://x.com/i/jf/onboarding/web?mode=login";
       this.state = X_PAGE_STATES.COMBINED_LOGIN_REQUIRED;
+      this.combinedPhase = "identifier";
     }
   }
 
@@ -454,6 +565,13 @@ function actionKinds(page) {
       return "fill-identifier";
     }
     if (action.type === "click") {
+      if (isLoginUsePassword(action.spec)) return "click-use-password";
+      if (
+        action.combinedPhase === "identifier" &&
+        isCombinedLoginContinue(action.spec)
+      ) {
+        return "click-next";
+      }
       if (isLoginNext(action.spec)) return "click-next";
       if (isLoginSubmit(action.spec) || isCombinedLoginSubmit(action.spec)) {
         return "click-login";
@@ -676,10 +794,62 @@ test("approved actions reject external pages before acting and after navigation"
   assert.deepEqual(actionKinds(redirectingPage), ["click-next"]);
 });
 
+test("credential fills recheck permission and exact route immediately before mutation", async () => {
+  for (const fixture of [
+    {
+      action: X_READ_ONLY_ACTIONS.FILL_LOGIN_IDENTIFIER,
+      value: "must-not-be-filled@example.test",
+      target: isCombinedLoginIdentifier,
+    },
+    {
+      action: X_READ_ONLY_ACTIONS.FILL_LOGIN_PASSWORD,
+      value: "must-not-be-filled",
+      target: isCombinedLoginPassword,
+    },
+  ]) {
+    const revoked = new FakePage({
+      state: X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
+      url: "https://x.com/i/jf/onboarding/web?mode=login",
+    });
+    let permissionChecks = 0;
+    await assert.rejects(
+      performReadOnlyAction(revoked, fixture.action, fixture.value, {
+        assertPermissionActive() {
+          permissionChecks += 1;
+          if (permissionChecks === 2) {
+            const error = new Error("permission revoked");
+            error.code = "FEATURE_DISABLED";
+            throw error;
+          }
+        },
+      }),
+      (error) => error?.code === "FEATURE_DISABLED",
+    );
+    assert.deepEqual(revoked.actions, []);
+
+    const drifted = new FakePage({
+      state: X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
+      url: "https://x.com/i/jf/onboarding/web?mode=login",
+    });
+    const originalIsVisible = drifted.isVisible.bind(drifted);
+    drifted.isVisible = (spec) => {
+      const visible = originalIsVisible(spec);
+      if (fixture.target(spec)) drifted.currentUrl = "https://x.com/";
+      return visible;
+    };
+    await assert.rejects(
+      performReadOnlyAction(drifted, fixture.action, fixture.value),
+      (error) => error?.code === "NAVIGATION_BLOCKED",
+    );
+    assert.deepEqual(drifted.actions, []);
+  }
+});
+
 test("read-only action surface has no unsupported timeline mutations", async () => {
   assert.deepEqual(Object.values(X_READ_ONLY_ACTIONS), [
     "fill-login-identifier",
     "click-login-next",
+    "click-login-use-password",
     "fill-login-username",
     "fill-login-password",
     "click-login-submit",
@@ -739,19 +909,42 @@ test("locator fallback survives one detached locator and rejects unknown specs",
   );
 });
 
-test("combined login submit uses the exact accessible button name", () => {
-  const [spec] = X_LOCATORS.combinedLoginSubmit;
+test("combined login method controls use exact accessible button names", () => {
+  const [continueSpec] = X_LOCATORS.combinedLoginContinue;
+  const [usePasswordSpec] = X_LOCATORS.loginUsePassword;
+  const [submitSpec, submitFallbackSpec] = X_LOCATORS.combinedLoginSubmit;
 
-  assert.equal(spec.kind, "role");
-  assert.equal(spec.role, "button");
-  assert.equal(nameMatches(spec.name, "Continue"), true);
-  assert.equal(nameMatches(spec.name, "Continue with phone"), false);
+  for (const spec of [
+    continueSpec,
+    usePasswordSpec,
+    submitSpec,
+    submitFallbackSpec,
+  ]) {
+    assert.equal(spec.kind, "role");
+    assert.equal(spec.role, "button");
+  }
+
+  assert.equal(nameMatches(continueSpec.name, "Continue"), true);
+  assert.equal(nameMatches(continueSpec.name, "Continue with phone"), false);
+  assert.equal(nameMatches(usePasswordSpec.name, "Use password"), true);
+  assert.equal(
+    nameMatches(usePasswordSpec.name, "Use a password manager"),
+    false,
+  );
+  assert.equal(nameMatches(submitSpec.name, "Log in"), true);
+  assert.equal(nameMatches(submitSpec.name, "Log in with Google"), false);
+  assert.equal(nameMatches(submitFallbackSpec.name, "Continue"), true);
+  assert.equal(
+    nameMatches(submitFallbackSpec.name, "Continue with phone"),
+    false,
+  );
 });
 
 test("page-state detection distinguishes authentication, login, and challenge", async () => {
   for (const state of [
     X_PAGE_STATES.AUTHENTICATED,
     X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
+    X_PAGE_STATES.USE_PASSWORD_REQUIRED,
     X_PAGE_STATES.LOGIN_REQUIRED,
     X_PAGE_STATES.ROOT_LANDING,
     X_PAGE_STATES.USERNAME_REQUIRED,
@@ -759,7 +952,10 @@ test("page-state detection distinguishes authentication, login, and challenge", 
     X_PAGE_STATES.CHALLENGE,
     X_PAGE_STATES.UNKNOWN,
   ]) {
-    const url = state === X_PAGE_STATES.COMBINED_LOGIN_REQUIRED
+    const url = [
+      X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
+      X_PAGE_STATES.USE_PASSWORD_REQUIRED,
+    ].includes(state)
       ? "https://x.com/i/jf/onboarding/web?mode=login"
       : state === X_PAGE_STATES.ROOT_LANDING
         ? "https://x.com/"
@@ -784,6 +980,28 @@ test("page-state detection distinguishes authentication, login, and challenge", 
     url: "https://x.com/i/flow/challenge/step",
   });
   assert.equal(await detectXPageState(challengeUrl), X_PAGE_STATES.CHALLENGE);
+
+  const passwordlessPrompt = new FakePage({
+    state: X_PAGE_STATES.USE_PASSWORD_REQUIRED,
+    url: "https://x.com/i/jf/onboarding/web?mode=login",
+  });
+  assert.equal(
+    await detectXPageState(passwordlessPrompt),
+    X_PAGE_STATES.USE_PASSWORD_REQUIRED,
+  );
+  const originalIsVisible = passwordlessPrompt.isVisible.bind(passwordlessPrompt);
+  passwordlessPrompt.isVisible = (spec) =>
+    isOneTimeCode(spec) ? false : originalIsVisible(spec);
+  assert.equal(
+    await detectXPageState(passwordlessPrompt),
+    X_PAGE_STATES.USE_PASSWORD_REQUIRED,
+  );
+  passwordlessPrompt.isVisible = originalIsVisible;
+  passwordlessPrompt.combinedUsePasswordVisible = false;
+  assert.equal(
+    await detectXPageState(passwordlessPrompt),
+    X_PAGE_STATES.CHALLENGE,
+  );
 });
 
 test("login controls are classified only on an approved login route", async () => {
@@ -864,7 +1082,7 @@ test("generic Home text inputs are never treated as login controls", async () =>
   assert.deepEqual(page.actions, []);
 });
 
-test("root landing uses the exact combined login form once", async () => {
+test("root landing selects the exact password method before one login submit", async () => {
   const email = "collector@example.test";
   const password = "synthetic-password-never-log";
   const page = new FakePage({
@@ -896,6 +1114,8 @@ test("root landing uses the exact combined login form once", async () => {
   ]);
   assert.deepEqual(actionKinds(page), [
     "fill-identifier",
+    "click-next",
+    "click-use-password",
     "fill-password",
     "click-login",
   ]);
@@ -904,6 +1124,137 @@ test("root landing uses the exact combined login form once", async () => {
     [email, password],
   );
   assert.deepEqual(page.waitCalls, [200, 200]);
+});
+
+test("a missing Use password control fails closed without entering a password", async () => {
+  const page = new FakePage({
+    state: X_PAGE_STATES.USE_PASSWORD_REQUIRED,
+    url: "https://x.com/i/jf/onboarding/web?mode=login",
+    combinedUsePasswordVisible: false,
+  });
+
+  await assert.rejects(
+    performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.CLICK_LOGIN_USE_PASSWORD,
+    ),
+    (error) =>
+      error?.code === "SELECTOR_DRIFT" &&
+      error?.locator === X_READ_ONLY_ACTIONS.CLICK_LOGIN_USE_PASSWORD,
+  );
+  assert.equal(
+    actionKinds(page).filter((action) => action === "click-use-password").length,
+    0,
+  );
+  assert.equal(
+    actionKinds(page).filter((action) => action === "fill-password").length,
+    0,
+  );
+  assert.equal(
+    page.actions.some(({ spec }) => isOneTimeCode(spec)),
+    false,
+  );
+});
+
+test("permission revocation while Use password materializes never clicks", async () => {
+  const page = new FakePage({
+    state: X_PAGE_STATES.USE_PASSWORD_REQUIRED,
+    url: "https://x.com/i/jf/onboarding/web?mode=login",
+    combinedUsePasswordDelayWaits: 10,
+  });
+
+  await assert.rejects(
+    performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.CLICK_LOGIN_USE_PASSWORD,
+      undefined,
+      {
+        assertPermissionActive() {
+          if (page.combinedUsePasswordWaits === 1) {
+            const error = new Error("permission revoked");
+            error.code = "FEATURE_DISABLED";
+            throw error;
+          }
+        },
+      },
+    ),
+    (error) => error?.code === "FEATURE_DISABLED",
+  );
+  assert.equal(
+    actionKinds(page).filter((action) => action === "click-use-password").length,
+    0,
+  );
+  assert.equal(
+    actionKinds(page).filter((action) => action === "fill-password").length,
+    0,
+  );
+  assert.deepEqual(page.waitCalls, [200]);
+});
+
+test("Use password route drift during materialization never clicks", async () => {
+  for (const combinedUsePasswordNavigateOnWait of [
+    "https://x.com/",
+    "https://x.com/i/flow/login",
+  ]) {
+    const page = new FakePage({
+      state: X_PAGE_STATES.USE_PASSWORD_REQUIRED,
+      url: "https://x.com/i/jf/onboarding/web?mode=login",
+      combinedUsePasswordDelayWaits: 10,
+      combinedUsePasswordNavigateOnWait,
+    });
+
+    await assert.rejects(
+      performReadOnlyAction(
+        page,
+        X_READ_ONLY_ACTIONS.CLICK_LOGIN_USE_PASSWORD,
+      ),
+      (error) => error?.code === "NAVIGATION_BLOCKED",
+      combinedUsePasswordNavigateOnWait,
+    );
+    assert.equal(
+      actionKinds(page).filter(
+        (action) => action === "click-use-password",
+      ).length,
+      0,
+      combinedUsePasswordNavigateOnWait,
+    );
+    assert.equal(
+      actionKinds(page).filter((action) => action === "fill-password").length,
+      0,
+      combinedUsePasswordNavigateOnWait,
+    );
+    assert.deepEqual(
+      page.waitCalls,
+      [200],
+      combinedUsePasswordNavigateOnWait,
+    );
+  }
+});
+
+test("a Use password click that does not change methods never enters a password", async () => {
+  const page = new FakePage({
+    state: X_PAGE_STATES.UNKNOWN,
+    redirectHomeToRoot: true,
+    combinedLoginRoute: true,
+    combinedUsePasswordClickTransitions: false,
+  });
+
+  await assert.rejects(
+    ensureXAuthenticated(page, {
+      env: {
+        X_LOGIN_EMAIL: "collector@example.test",
+        X_LOGIN_PASSWORD: "must-not-be-entered",
+      },
+      stateTimeoutMs: 1,
+    }),
+    (error) => error?.code === "AUTH_FAILED",
+  );
+  assert.deepEqual(actionKinds(page), [
+    "fill-identifier",
+    "click-next",
+    "click-use-password",
+  ]);
+  assert.equal(page.combinedPasswordFilled, false);
 });
 
 test("permission revocation while the exact combined submit materializes never clicks", async () => {
@@ -1026,6 +1377,8 @@ test("transient root shells settle before the exact combined login acts", async 
   assert.equal(method, "credentials");
   assert.deepEqual(actionKinds(page), [
     "fill-identifier",
+    "click-next",
+    "click-use-password",
     "fill-password",
     "click-login",
   ]);

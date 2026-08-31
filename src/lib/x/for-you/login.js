@@ -22,6 +22,7 @@ const LOGIN_URL = "https://x.com/i/flow/login";
 const LOGIN_ENTRY_STATES = Object.freeze([
   X_PAGE_STATES.AUTHENTICATED,
   X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
+  X_PAGE_STATES.USE_PASSWORD_REQUIRED,
   X_PAGE_STATES.LOGIN_REQUIRED,
   X_PAGE_STATES.USERNAME_REQUIRED,
   X_PAGE_STATES.PASSWORD_REQUIRED,
@@ -163,9 +164,15 @@ async function requirePasswordStep(page, options, initialState = null) {
       page,
       X_READ_ONLY_ACTIONS.FILL_LOGIN_USERNAME,
       options.credentials.username.replace(/^@/, ""),
+      { assertPermissionActive: options.assertPermissionActive },
     );
     options.assertPermissionActive();
-    await performReadOnlyAction(page, X_READ_ONLY_ACTIONS.CLICK_LOGIN_NEXT);
+    await performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.CLICK_LOGIN_NEXT,
+      undefined,
+      { assertPermissionActive: options.assertPermissionActive },
+    );
     state = await waitForXPageState(page, {
       acceptedStates: [
         X_PAGE_STATES.PASSWORD_REQUIRED,
@@ -183,6 +190,23 @@ async function requirePasswordStep(page, options, initialState = null) {
   }
 
   return state;
+}
+
+async function waitForCombinedTransition(page, acceptedStates, options) {
+  const state = await waitForXPageState(page, {
+    acceptedStates,
+    timeoutMs: options.stateTimeoutMs,
+    assertPermissionActive: options.assertPermissionActive,
+  });
+  if (state !== X_PAGE_STATES.UNKNOWN) return state;
+
+  // The one-time-code surface can render just before its exact password
+  // alternative. Poll only for explicitly accepted states, then classify the
+  // settled surface once. No verification-code control is ever actioned.
+  options.assertPermissionActive();
+  const settledState = await detectXPageState(page);
+  options.assertPermissionActive();
+  return settledState;
 }
 
 export async function ensureXAuthenticated(
@@ -242,6 +266,7 @@ export async function ensureXAuthenticated(
 
   if (![
     X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
+    X_PAGE_STATES.USE_PASSWORD_REQUIRED,
     X_PAGE_STATES.LOGIN_REQUIRED,
     X_PAGE_STATES.USERNAME_REQUIRED,
     X_PAGE_STATES.PASSWORD_REQUIRED,
@@ -257,7 +282,7 @@ export async function ensureXAuthenticated(
 
   log("AUTH_LOGIN_STARTED");
 
-  let submittedCredentials = false;
+  let submittedPassword = false;
 
   if (state === X_PAGE_STATES.COMBINED_LOGIN_REQUIRED) {
     assertPermissionActive();
@@ -265,21 +290,66 @@ export async function ensureXAuthenticated(
       page,
       X_READ_ONLY_ACTIONS.FILL_LOGIN_IDENTIFIER,
       credentials.email,
+      { assertPermissionActive },
     );
     assertPermissionActive();
     await performReadOnlyAction(
       page,
-      X_READ_ONLY_ACTIONS.FILL_LOGIN_PASSWORD,
-      credentials.password,
-    );
-    assertPermissionActive();
-    await performReadOnlyAction(
-      page,
-      X_READ_ONLY_ACTIONS.CLICK_LOGIN_SUBMIT,
+      X_READ_ONLY_ACTIONS.CLICK_LOGIN_NEXT,
       undefined,
       { assertPermissionActive },
     );
-    submittedCredentials = true;
+    state = await waitForCombinedTransition(
+      page,
+      [
+        X_PAGE_STATES.USE_PASSWORD_REQUIRED,
+        X_PAGE_STATES.AUTHENTICATED,
+      ],
+      { stateTimeoutMs, assertPermissionActive },
+    );
+  }
+
+  if (state === X_PAGE_STATES.CHALLENGE) {
+    await waitForManualChallenge(page, {
+      interactiveChallenges,
+      manualActionTimeoutMs,
+      stateTimeoutMs,
+      assertPermissionActive,
+      log,
+    });
+    log("AUTH_LOGIN_SUCCEEDED", { method: "manual" });
+    return "manual";
+  }
+
+  if (state === X_PAGE_STATES.USE_PASSWORD_REQUIRED) {
+    assertPermissionActive();
+    await performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.CLICK_LOGIN_USE_PASSWORD,
+      undefined,
+      { assertPermissionActive },
+    );
+    state = await waitForCombinedTransition(
+      page,
+      [
+        X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
+        X_PAGE_STATES.PASSWORD_REQUIRED,
+        X_PAGE_STATES.AUTHENTICATED,
+      ],
+      { stateTimeoutMs, assertPermissionActive },
+    );
+  }
+
+  if (state === X_PAGE_STATES.CHALLENGE) {
+    await waitForManualChallenge(page, {
+      interactiveChallenges,
+      manualActionTimeoutMs,
+      stateTimeoutMs,
+      assertPermissionActive,
+      log,
+    });
+    log("AUTH_LOGIN_SUCCEEDED", { method: "manual" });
+    return "manual";
   }
 
   if (state === X_PAGE_STATES.LOGIN_REQUIRED) {
@@ -288,9 +358,15 @@ export async function ensureXAuthenticated(
       page,
       X_READ_ONLY_ACTIONS.FILL_LOGIN_IDENTIFIER,
       credentials.email,
+      { assertPermissionActive },
     );
     assertPermissionActive();
-    await performReadOnlyAction(page, X_READ_ONLY_ACTIONS.CLICK_LOGIN_NEXT);
+    await performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.CLICK_LOGIN_NEXT,
+      undefined,
+      { assertPermissionActive },
+    );
     state = await requirePasswordStep(page, {
       credentials,
       interactiveChallenges,
@@ -316,16 +392,21 @@ export async function ensureXAuthenticated(
     log("AUTH_LOGIN_SUCCEEDED", { method: "credentials" });
     return "credentials";
   }
-  if (!submittedCredentials && state !== X_PAGE_STATES.PASSWORD_REQUIRED) {
+  if (
+    !submittedPassword &&
+    state !== X_PAGE_STATES.PASSWORD_REQUIRED &&
+    state !== X_PAGE_STATES.COMBINED_LOGIN_REQUIRED
+  ) {
     throw authenticationError("X login did not reach the password step.");
   }
 
-  if (!submittedCredentials) {
+  if (!submittedPassword) {
     assertPermissionActive();
     await performReadOnlyAction(
       page,
       X_READ_ONLY_ACTIONS.FILL_LOGIN_PASSWORD,
       credentials.password,
+      { assertPermissionActive },
     );
     assertPermissionActive();
     await performReadOnlyAction(
@@ -334,6 +415,7 @@ export async function ensureXAuthenticated(
       undefined,
       { assertPermissionActive },
     );
+    submittedPassword = true;
   }
 
   state = await waitForXPageState(page, {

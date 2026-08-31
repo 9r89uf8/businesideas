@@ -29,6 +29,9 @@ export const X_LOCATORS = Object.freeze({
       'form:has(input[name="username_or_email"][type="text"]):has(input[name="password"][type="password"])',
     ),
   ]),
+  combinedLoginPasswordForm: Object.freeze([
+    css('form:has(input[name="password"][type="password"])'),
+  ]),
   combinedLoginIdentifier: Object.freeze([
     css('input[name="username_or_email"][type="text"]'),
   ]),
@@ -52,7 +55,14 @@ export const X_LOCATORS = Object.freeze({
     role("button", /^Log in$/i),
     css('[data-testid="LoginForm_Login_Button"]'),
   ]),
+  combinedLoginContinue: Object.freeze([
+    role("button", /^Continue$/i),
+  ]),
+  loginUsePassword: Object.freeze([
+    role("button", /^Use password$/i),
+  ]),
   combinedLoginSubmit: Object.freeze([
+    role("button", /^Log in$/i),
     role("button", /^Continue$/i),
   ]),
   forYouTab: Object.freeze([
@@ -61,9 +71,11 @@ export const X_LOCATORS = Object.freeze({
   timelinePost: Object.freeze([
     css('main article[data-testid="tweet"]'),
   ]),
-  challengeStructural: Object.freeze([
+  challengeHardStructural: Object.freeze([
     css('iframe[src*="captcha"]'),
     css('iframe[title*="challenge" i]'),
+  ]),
+  oneTimeCode: Object.freeze([
     css('input[autocomplete="one-time-code"]'),
     css('input[name="challenge_response"]'),
   ]),

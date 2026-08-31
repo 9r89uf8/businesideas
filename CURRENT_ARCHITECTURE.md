@@ -1583,7 +1583,11 @@ its instance role. It verifies that the live X account matches the approved
 handle, uses only the allowlisted read-only browser actions, and returns at most
 100 unique post IDs with feed positions. Passwords, cookies, post text, and
 browser state never cross the callback boundary. Challenge or account drift
-fails closed without interaction.
+fails closed without interaction. On X's combined login surface, the only
+approved passwordless-method escape is the exact accessible `Use password`
+button on the exact login URL: the collector enters the email, clicks the exact
+`Continue` control once, switches to password once, and then submits the
+password once. It never reads, fills, or submits a six-digit verification code.
 
 The Vercel Workflow hydrates accepted IDs through the existing official X
 lookup client, applies the normal date, repost, quote, view-quality, duplicate,

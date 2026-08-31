@@ -58,7 +58,12 @@ export async function selectForYouFeed(
 
   if ((await match.locator.getAttribute("aria-selected")) !== "true") {
     assertPermissionActive();
-    await performReadOnlyAction(page, X_READ_ONLY_ACTIONS.CLICK_FOR_YOU);
+    await performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.CLICK_FOR_YOU,
+      undefined,
+      { assertPermissionActive },
+    );
   }
 
   const deadline = Date.now() + timeoutMs;

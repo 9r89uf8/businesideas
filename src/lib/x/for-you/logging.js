@@ -33,6 +33,7 @@ const SAFE_ERROR_CODES = new Set([
 const SAFE_LOCATORS = new Set([
   "fill-login-identifier",
   "click-login-next",
+  "click-login-use-password",
   "fill-login-username",
   "fill-login-password",
   "click-login-submit",

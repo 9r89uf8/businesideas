@@ -16,6 +16,7 @@ import {
 export const X_PAGE_STATES = Object.freeze({
   AUTHENTICATED: "AUTHENTICATED",
   COMBINED_LOGIN_REQUIRED: "COMBINED_LOGIN_REQUIRED",
+  USE_PASSWORD_REQUIRED: "USE_PASSWORD_REQUIRED",
   LOGIN_REQUIRED: "LOGIN_REQUIRED",
   ROOT_LANDING: "ROOT_LANDING",
   USERNAME_REQUIRED: "USERNAME_REQUIRED",
@@ -38,7 +39,19 @@ function urlIndicatesChallenge(value) {
 
 export async function detectXPageState(page) {
   if (urlIndicatesChallenge(page.url())) return X_PAGE_STATES.CHALLENGE;
-  if (await anyLocatorVisible(page, X_LOCATORS.challengeStructural)) {
+  if (await anyLocatorVisible(page, X_LOCATORS.challengeHardStructural)) {
+    return X_PAGE_STATES.CHALLENGE;
+  }
+  // X's approved passwordless prompt contains a one-time-code input, but also
+  // offers this exact method switch. Recognize only that narrow escape hatch;
+  // the collector never reads from or writes to the code input.
+  if (
+    isAllowedXCombinedLoginUrl(page.url()) &&
+    await anyLocatorVisible(page, X_LOCATORS.loginUsePassword)
+  ) {
+    return X_PAGE_STATES.USE_PASSWORD_REQUIRED;
+  }
+  if (await anyLocatorVisible(page, X_LOCATORS.oneTimeCode)) {
     return X_PAGE_STATES.CHALLENGE;
   }
   if (
@@ -68,18 +81,26 @@ export async function detectXPageState(page) {
 
   if (isAllowedXCombinedLoginUrl(page.url())) {
     const form = await findVisibleLocator(page, X_LOCATORS.combinedLoginForm);
-    if (!form) return X_PAGE_STATES.UNKNOWN;
+    if (form) {
+      const identifierVisible = await anyLocatorVisible(
+        form.locator,
+        X_LOCATORS.combinedLoginIdentifier,
+      );
+      const passwordVisible = await anyLocatorVisible(
+        form.locator,
+        X_LOCATORS.combinedLoginPassword,
+      );
+      if (identifierVisible && passwordVisible) {
+        return X_PAGE_STATES.COMBINED_LOGIN_REQUIRED;
+      }
+    }
 
-    const identifierVisible = await anyLocatorVisible(
-      form.locator,
-      X_LOCATORS.combinedLoginIdentifier,
+    const passwordForm = await findVisibleLocator(
+      page,
+      X_LOCATORS.combinedLoginPasswordForm,
     );
-    const passwordVisible = await anyLocatorVisible(
-      form.locator,
-      X_LOCATORS.combinedLoginPassword,
-    );
-    return identifierVisible && passwordVisible
-      ? X_PAGE_STATES.COMBINED_LOGIN_REQUIRED
+    return passwordForm
+      ? X_PAGE_STATES.PASSWORD_REQUIRED
       : X_PAGE_STATES.UNKNOWN;
   }
 
