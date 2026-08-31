@@ -6,15 +6,18 @@ import {
   X_LOCATORS,
 } from "./locators.js";
 import {
+  isAllowedXHomeUrl,
   isAllowedXCombinedLoginUrl,
   isAllowedXLoginUrl,
   isAllowedXUrl,
+  isExactXRootLanding,
 } from "./navigation.js";
 
 export const X_PAGE_STATES = Object.freeze({
   AUTHENTICATED: "AUTHENTICATED",
   COMBINED_LOGIN_REQUIRED: "COMBINED_LOGIN_REQUIRED",
   LOGIN_REQUIRED: "LOGIN_REQUIRED",
+  ROOT_LANDING: "ROOT_LANDING",
   USERNAME_REQUIRED: "USERNAME_REQUIRED",
   PASSWORD_REQUIRED: "PASSWORD_REQUIRED",
   CHALLENGE: "CHALLENGE",
@@ -56,7 +59,10 @@ export async function detectXPageState(page) {
   }
   // Prefer the authenticated Home surface over generic textbox/text
   // fallbacks so timeline content can never be mistaken for a login prompt.
-  if (await anyLocatorVisible(page, X_LOCATORS.authenticated)) {
+  if (
+    isAllowedXHomeUrl(page.url()) &&
+    await anyLocatorVisible(page, X_LOCATORS.authenticated)
+  ) {
     return X_PAGE_STATES.AUTHENTICATED;
   }
 
@@ -81,6 +87,14 @@ export async function detectXPageState(page) {
     isAllowedXUrl(page.url()) &&
     new URL(page.url()).pathname === "/i/jf/onboarding/web"
   ) {
+    return X_PAGE_STATES.UNKNOWN;
+  }
+
+  if (isExactXRootLanding(page.url())) {
+    return X_PAGE_STATES.ROOT_LANDING;
+  }
+
+  if (!isAllowedXLoginUrl(page.url())) {
     return X_PAGE_STATES.UNKNOWN;
   }
 

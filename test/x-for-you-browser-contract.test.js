@@ -149,12 +149,17 @@ class FakeLocator {
   }
 
   async fill(value) {
-    this.page.actions.push({ type: "fill", spec: this.spec, value });
+    this.page.actions.push({
+      type: "fill",
+      spec: this.spec,
+      value,
+      url: this.page.url(),
+    });
     this.page.afterFill(this.spec);
   }
 
   async click() {
-    this.page.actions.push({ type: "click", spec: this.spec });
+    this.page.actions.push({ type: "click", spec: this.spec, url: this.page.url() });
     this.page.afterClick(this.spec);
   }
 
@@ -193,6 +198,9 @@ class FakePage {
     redirectHomeToRoot = false,
     combinedLoginRoute = false,
     rootLandingUrl = "https://x.com/",
+    homeSettlesToBareRoot = false,
+    loginSettlesToCombined = false,
+    loginStaysOnRoot = false,
   } = {}) {
     this.state = state;
     this.currentUrl = url;
@@ -205,6 +213,11 @@ class FakePage {
     this.redirectHomeToRoot = redirectHomeToRoot;
     this.combinedLoginRoute = combinedLoginRoute;
     this.rootLandingUrl = rootLandingUrl;
+    this.homeSettlesToBareRoot = homeSettlesToBareRoot;
+    this.loginSettlesToCombined = loginSettlesToCombined;
+    this.loginStaysOnRoot = loginStaysOnRoot;
+    this.pendingHomeTransition = false;
+    this.pendingLoginTransition = false;
     this.combinedIdentifierFilled = false;
     this.combinedPasswordFilled = false;
     this.actions = [];
@@ -231,12 +244,22 @@ class FakePage {
     } else if (url === "https://x.com/home" && this.redirectHomeToRoot) {
       this.currentUrl = this.rootLandingUrl;
       this.state = X_PAGE_STATES.UNKNOWN;
+      this.pendingHomeTransition = this.homeSettlesToBareRoot;
+    } else if (url === "https://x.com/i/flow/login" && this.loginStaysOnRoot) {
+      this.currentUrl = "https://x.com/";
+      this.state = X_PAGE_STATES.UNKNOWN;
     } else if (
       url === "https://x.com/i/flow/login" &&
       this.combinedLoginRoute
     ) {
-      this.currentUrl = "https://x.com/i/jf/onboarding/web?mode=login";
-      this.state = X_PAGE_STATES.COMBINED_LOGIN_REQUIRED;
+      if (this.loginSettlesToCombined) {
+        this.currentUrl = "https://x.com/";
+        this.state = X_PAGE_STATES.UNKNOWN;
+        this.pendingLoginTransition = true;
+      } else {
+        this.currentUrl = "https://x.com/i/jf/onboarding/web?mode=login";
+        this.state = X_PAGE_STATES.COMBINED_LOGIN_REQUIRED;
+      }
     } else {
       this.currentUrl = "https://x.com/i/flow/login";
     }
@@ -338,6 +361,15 @@ class FakePage {
 
   async waitForTimeout(milliseconds) {
     this.waitCalls.push(milliseconds);
+    if (this.pendingHomeTransition) {
+      this.pendingHomeTransition = false;
+      this.currentUrl = "https://x.com/";
+      this.state = X_PAGE_STATES.UNKNOWN;
+    } else if (this.pendingLoginTransition) {
+      this.pendingLoginTransition = false;
+      this.currentUrl = "https://x.com/i/jf/onboarding/web?mode=login";
+      this.state = X_PAGE_STATES.COMBINED_LOGIN_REQUIRED;
+    }
   }
 
   async route(_pattern, handler) {
@@ -692,6 +724,7 @@ test("page-state detection distinguishes authentication, login, and challenge", 
     X_PAGE_STATES.AUTHENTICATED,
     X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
     X_PAGE_STATES.LOGIN_REQUIRED,
+    X_PAGE_STATES.ROOT_LANDING,
     X_PAGE_STATES.USERNAME_REQUIRED,
     X_PAGE_STATES.PASSWORD_REQUIRED,
     X_PAGE_STATES.CHALLENGE,
@@ -699,6 +732,8 @@ test("page-state detection distinguishes authentication, login, and challenge", 
   ]) {
     const url = state === X_PAGE_STATES.COMBINED_LOGIN_REQUIRED
       ? "https://x.com/i/jf/onboarding/web?mode=login"
+      : state === X_PAGE_STATES.ROOT_LANDING
+        ? "https://x.com/"
       : [
           X_PAGE_STATES.LOGIN_REQUIRED,
           X_PAGE_STATES.USERNAME_REQUIRED,
@@ -729,7 +764,7 @@ test("login controls are classified only on an approved login route", async () =
   });
   assert.equal(
     await detectXPageState(rootPassword),
-    X_PAGE_STATES.PASSWORD_REQUIRED,
+    X_PAGE_STATES.ROOT_LANDING,
   );
   await assert.rejects(
     performReadOnlyAction(
@@ -740,6 +775,18 @@ test("login controls are classified only on an approved login route", async () =
     (error) => error?.code === "NAVIGATION_BLOCKED",
   );
   assert.deepEqual(rootPassword.actions, []);
+
+  const homePassword = new FakePage({
+    state: X_PAGE_STATES.PASSWORD_REQUIRED,
+    url: "https://x.com/home",
+  });
+  assert.equal(await detectXPageState(homePassword), X_PAGE_STATES.UNKNOWN);
+
+  const loginAuthenticated = new FakePage({
+    state: X_PAGE_STATES.AUTHENTICATED,
+    url: "https://x.com/i/flow/login",
+  });
+  assert.equal(await detectXPageState(loginAuthenticated), X_PAGE_STATES.UNKNOWN);
 
   const signupCombined = new FakePage({
     state: X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
@@ -854,6 +901,97 @@ test("non-exact root landings never enter credentials", async () => {
     assert.equal(page.gotoCalls.length, 1, rootLandingUrl);
     assert.deepEqual(page.actions, [], rootLandingUrl);
   }
+});
+
+test("transient root shells settle before the exact combined login acts", async () => {
+  const email = "collector@example.test";
+  const password = "synthetic-password-never-log";
+  const page = new FakePage({
+    state: X_PAGE_STATES.UNKNOWN,
+    redirectHomeToRoot: true,
+    rootLandingUrl: "https://x.com/?transient=1",
+    homeSettlesToBareRoot: true,
+    combinedLoginRoute: true,
+    loginSettlesToCombined: true,
+    submitState: X_PAGE_STATES.AUTHENTICATED,
+  });
+
+  const method = await ensureXAuthenticated(page, {
+    env: {
+      X_LOGIN_EMAIL: email,
+      X_LOGIN_PASSWORD: password,
+    },
+    stateTimeoutMs: 20,
+  });
+
+  assert.equal(method, "credentials");
+  assert.deepEqual(actionKinds(page), [
+    "fill-identifier",
+    "fill-password",
+    "click-login",
+  ]);
+  assert.deepEqual(
+    page.actions.filter((action) => action.type === "fill").map(({ value }) => value),
+    [email, password],
+  );
+  assert.ok(page.waitCalls.length >= 2);
+  assert.ok(
+    page.actions.every(
+      (action) => action.url === "https://x.com/i/jf/onboarding/web?mode=login",
+    ),
+  );
+});
+
+test("a login root shell that never reaches an approved form performs no actions", async () => {
+  const page = new FakePage({
+    state: X_PAGE_STATES.UNKNOWN,
+    redirectHomeToRoot: true,
+    loginStaysOnRoot: true,
+  });
+
+  await assert.rejects(
+    ensureXAuthenticated(page, {
+      env: {
+        X_LOGIN_EMAIL: "must-not-be-entered@example.test",
+        X_LOGIN_PASSWORD: "must-not-be-entered",
+      },
+      stateTimeoutMs: 1,
+    }),
+    (error) => error?.code === "AUTH_FAILED",
+  );
+  assert.equal(page.gotoCalls.length, 2);
+  assert.deepEqual(page.actions, []);
+});
+
+test("permission revocation during a root-shell transition performs no actions", async () => {
+  const page = new FakePage({
+    state: X_PAGE_STATES.UNKNOWN,
+    redirectHomeToRoot: true,
+    combinedLoginRoute: true,
+    loginSettlesToCombined: true,
+  });
+  let permissionChecks = 0;
+
+  await assert.rejects(
+    ensureXAuthenticated(page, {
+      env: {
+        X_LOGIN_EMAIL: "must-not-be-entered@example.test",
+        X_LOGIN_PASSWORD: "must-not-be-entered",
+      },
+      stateTimeoutMs: 20,
+      assertPermissionActive() {
+        permissionChecks += 1;
+        if (permissionChecks === 5) {
+          const error = new Error("permission revoked");
+          error.code = "FEATURE_DISABLED";
+          throw error;
+        }
+      },
+    }),
+    (error) => error?.code === "FEATURE_DISABLED",
+  );
+  assert.equal(permissionChecks, 5);
+  assert.deepEqual(page.actions, []);
 });
 
 test("combined login submits at most once and fails closed", async () => {

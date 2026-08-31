@@ -39,6 +39,22 @@ export function isAllowedXUrl(value, { allowBlank = false } = {}) {
   }
 }
 
+export function isExactXRootLanding(value) {
+  if (!isAllowedXUrl(value)) return false;
+  const url = new URL(value);
+  return (
+    url.origin === "https://x.com" &&
+    url.pathname === "/" &&
+    url.search === "" &&
+    url.hash === ""
+  );
+}
+
+export function isAllowedXHomeUrl(value) {
+  if (!isAllowedXUrl(value)) return false;
+  return /^\/home\/?$/.test(new URL(value).pathname);
+}
+
 export function isAllowedXWorkflowUrl(value) {
   if (!isAllowedXUrl(value)) return false;
   const url = new URL(value);
@@ -97,8 +113,7 @@ export function requireXLoginPage(page) {
 
 export function requireXHomePage(page) {
   const currentUrl = requireAllowedXPage(page);
-  const { pathname } = new URL(currentUrl);
-  if (!/^\/home\/?$/.test(pathname)) {
+  if (!isAllowedXHomeUrl(currentUrl)) {
     const error = new Error("The collector is not on the approved X Home page.");
     error.code = "NAVIGATION_BLOCKED";
     throw error;

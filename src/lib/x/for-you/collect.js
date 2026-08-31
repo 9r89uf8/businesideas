@@ -86,7 +86,9 @@ async function assertCollectiblePage(
     );
   }
   if (
+    state === X_PAGE_STATES.COMBINED_LOGIN_REQUIRED ||
     state === X_PAGE_STATES.LOGIN_REQUIRED ||
+    state === X_PAGE_STATES.ROOT_LANDING ||
     state === X_PAGE_STATES.USERNAME_REQUIRED ||
     state === X_PAGE_STATES.PASSWORD_REQUIRED
   ) {

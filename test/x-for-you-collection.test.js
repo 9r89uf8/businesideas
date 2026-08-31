@@ -68,7 +68,10 @@ function patternMatches(pattern, value) {
 
 function visibilityLocator(
   visible,
-  { descendantTextVisible = () => false } = {},
+  {
+    descendantCssVisible = () => false,
+    descendantTextVisible = () => false,
+  } = {},
 ) {
   return {
     first() {
@@ -95,6 +98,9 @@ function visibilityLocator(
     },
     getByText(name) {
       return visibilityLocator(visible && descendantTextVisible(name));
+    },
+    locator(selector) {
+      return visibilityLocator(visible && descendantCssVisible(selector));
     },
   };
 }
@@ -162,6 +168,13 @@ function createCollectionPage({
         selector === 'input[type="password"]'
       );
     }
+    if (state === "combined") {
+      return [
+        'form:has(input[name="username_or_email"][type="text"]):has(input[name="password"][type="password"])',
+        'input[name="username_or_email"][type="text"]',
+        'input[name="password"][type="password"]',
+      ].includes(selector);
+    }
     return false;
   }
 
@@ -169,6 +182,12 @@ function createCollectionPage({
     url() {
       return state === "challenge"
         ? "https://x.com/i/flow/challenge"
+        : state === "combined"
+          ? "https://x.com/i/jf/onboarding/web?mode=login"
+          : state === "root"
+            ? "https://x.com/"
+            : ["login", "username", "password"].includes(state)
+              ? "https://x.com/i/flow/login"
         : "https://x.com/home";
     },
     getByRole(role, options = {}) {
@@ -201,6 +220,7 @@ function createCollectionPage({
         };
       }
       return visibilityLocator(cssVisible(selector), {
+        descendantCssVisible: cssVisible,
         descendantTextVisible: textVisible,
       });
     },
@@ -622,7 +642,9 @@ test("scroll limit normalization enforces the collector's hard bounds", () => {
 test("collection fails closed for challenges, expired sessions, and feed errors", async (t) => {
   const cases = [
     { name: "challenge", page: { state: "challenge" }, code: "MANUAL_ACTION_REQUIRED" },
-    { name: "expired session", page: { state: "login" }, code: "SESSION_EXPIRED" },
+    { name: "expired legacy session", page: { state: "login" }, code: "SESSION_EXPIRED" },
+    { name: "expired root session", page: { state: "root" }, code: "SESSION_EXPIRED" },
+    { name: "expired combined session", page: { state: "combined" }, code: "SESSION_EXPIRED" },
     { name: "feed error", page: { feedError: true }, code: "FEED_ERROR" },
   ];
 

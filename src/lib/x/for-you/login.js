@@ -10,6 +10,7 @@ import {
 import { findVisibleLocator, X_LOCATORS } from "./locators.js";
 import {
   isAllowedXUrl,
+  isExactXRootLanding,
   requireAllowedXWorkflowPage,
   requireXHomePage,
   requireXLoginPage,
@@ -18,16 +19,14 @@ import {
 const HOME_URL = "https://x.com/home";
 const LOGIN_URL = "https://x.com/i/flow/login";
 
-function isExactXRootLanding(value) {
-  if (!isAllowedXUrl(value)) return false;
-  const url = new URL(value);
-  return (
-    url.origin === "https://x.com" &&
-    url.pathname === "/" &&
-    url.search === "" &&
-    url.hash === ""
-  );
-}
+const LOGIN_ENTRY_STATES = Object.freeze([
+  X_PAGE_STATES.AUTHENTICATED,
+  X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
+  X_PAGE_STATES.LOGIN_REQUIRED,
+  X_PAGE_STATES.USERNAME_REQUIRED,
+  X_PAGE_STATES.PASSWORD_REQUIRED,
+  X_PAGE_STATES.CHALLENGE,
+]);
 
 function requiredCredential(value) {
   return typeof value === "string" && value.trim() ? value : null;
@@ -201,25 +200,29 @@ export async function ensureXAuthenticated(
   await page.goto(HOME_URL, { waitUntil: "domcontentloaded" });
   requireAllowedXWorkflowPage(page);
 
-  if (isExactXRootLanding(page.url())) {
-    assertPermissionActive();
-    await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
-    assertPermissionActive();
-    requireXLoginPage(page);
-  }
-
   let state = await waitForXPageState(page, {
     acceptedStates: [
-      X_PAGE_STATES.AUTHENTICATED,
-      X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
-      X_PAGE_STATES.LOGIN_REQUIRED,
-      X_PAGE_STATES.USERNAME_REQUIRED,
-      X_PAGE_STATES.PASSWORD_REQUIRED,
-      X_PAGE_STATES.CHALLENGE,
+      ...LOGIN_ENTRY_STATES,
+      X_PAGE_STATES.ROOT_LANDING,
     ],
     timeoutMs: stateTimeoutMs,
     assertPermissionActive,
   });
+
+  if (state === X_PAGE_STATES.ROOT_LANDING) {
+    // Logged-out X can briefly render its safe root SPA shell both before and
+    // after this fixed-route navigation. Never inspect or act on that shell;
+    // the bounded state poll below waits for an approved login surface.
+    assertPermissionActive();
+    await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
+    assertPermissionActive();
+    requireAllowedXWorkflowPage(page);
+    state = await waitForXPageState(page, {
+      acceptedStates: LOGIN_ENTRY_STATES,
+      timeoutMs: stateTimeoutMs,
+      assertPermissionActive,
+    });
+  }
 
   if (state === X_PAGE_STATES.AUTHENTICATED) {
     log("AUTH_SESSION_REUSED");
@@ -236,6 +239,16 @@ export async function ensureXAuthenticated(
     log("AUTH_LOGIN_SUCCEEDED", { method: "manual" });
     return "manual";
   }
+
+  if (![
+    X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
+    X_PAGE_STATES.LOGIN_REQUIRED,
+    X_PAGE_STATES.USERNAME_REQUIRED,
+    X_PAGE_STATES.PASSWORD_REQUIRED,
+  ].includes(state)) {
+    throw authenticationError("X login did not reach an approved login state.");
+  }
+  requireXLoginPage(page);
 
   const credentials = resolveXLoginCredentials(env);
   if (!credentials.email || !credentials.password) {
