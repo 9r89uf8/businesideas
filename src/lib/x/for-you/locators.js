@@ -53,7 +53,7 @@ export const X_LOCATORS = Object.freeze({
     css('[data-testid="LoginForm_Login_Button"]'),
   ]),
   combinedLoginSubmit: Object.freeze([
-    css('button[type="submit"]:visible:text-is("Continue")'),
+    role("button", /^Continue$/i),
   ]),
   forYouTab: Object.freeze([
     role("tab", /^For you$/i),

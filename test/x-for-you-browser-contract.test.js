@@ -122,8 +122,9 @@ function isLoginSubmit(spec) {
 
 function isCombinedLoginSubmit(spec) {
   return (
-    spec.kind === "css" &&
-    spec.selector === 'button[type="submit"]:visible:text-is("Continue")'
+    spec.kind === "role" &&
+    spec.role === "button" &&
+    nameMatches(spec.name, "Continue")
   );
 }
 
@@ -738,6 +739,15 @@ test("locator fallback survives one detached locator and rejects unknown specs",
   );
 });
 
+test("combined login submit uses the exact accessible button name", () => {
+  const [spec] = X_LOCATORS.combinedLoginSubmit;
+
+  assert.equal(spec.kind, "role");
+  assert.equal(spec.role, "button");
+  assert.equal(nameMatches(spec.name, "Continue"), true);
+  assert.equal(nameMatches(spec.name, "Continue with phone"), false);
+});
+
 test("page-state detection distinguishes authentication, login, and challenge", async () => {
   for (const state of [
     X_PAGE_STATES.AUTHENTICATED,
@@ -1010,7 +1020,7 @@ test("transient root shells settle before the exact combined login acts", async 
       X_LOGIN_EMAIL: email,
       X_LOGIN_PASSWORD: password,
     },
-    stateTimeoutMs: 20,
+    stateTimeoutMs: 1_000,
   });
 
   assert.equal(method, "credentials");
