@@ -1,5 +1,6 @@
 import { findVisibleLocator, X_LOCATORS } from "./locators.js";
 import {
+  isAllowedXCombinedLoginUrl,
   requireAllowedXWorkflowPage,
   requireXHomePage,
   requireXLoginPage,
@@ -37,6 +38,10 @@ async function requireVisible(page, specs, action) {
   return match.locator;
 }
 
+async function combinedLoginForm(page, action) {
+  return requireVisible(page, X_LOCATORS.combinedLoginForm, action);
+}
+
 /**
  * This switch is the collector's complete mutating UI-action surface. It has
  * no generic click/fill escape hatch and deliberately contains no timeline,
@@ -54,9 +59,13 @@ export async function performReadOnlyAction(page, action, value) {
 
   switch (action) {
     case X_READ_ONLY_ACTIONS.FILL_LOGIN_IDENTIFIER: {
+      const combined = isAllowedXCombinedLoginUrl(page.url());
+      const root = combined ? await combinedLoginForm(page, action) : page;
       const locator = await requireVisible(
-        page,
-        X_LOCATORS.loginIdentifier,
+        root,
+        combined
+          ? X_LOCATORS.combinedLoginIdentifier
+          : X_LOCATORS.loginIdentifier,
         action,
       );
       await locator.fill(String(value));
@@ -77,14 +86,24 @@ export async function performReadOnlyAction(page, action, value) {
       break;
     }
     case X_READ_ONLY_ACTIONS.FILL_LOGIN_PASSWORD: {
-      const locator = await requireVisible(page, X_LOCATORS.password, action);
+      const combined = isAllowedXCombinedLoginUrl(page.url());
+      const root = combined ? await combinedLoginForm(page, action) : page;
+      const locator = await requireVisible(
+        root,
+        combined ? X_LOCATORS.combinedLoginPassword : X_LOCATORS.password,
+        action,
+      );
       await locator.fill(String(value));
       break;
     }
     case X_READ_ONLY_ACTIONS.CLICK_LOGIN_SUBMIT: {
+      const combined = isAllowedXCombinedLoginUrl(page.url());
+      const root = combined ? await combinedLoginForm(page, action) : page;
       const locator = await requireVisible(
-        page,
-        X_LOCATORS.loginSubmit,
+        root,
+        combined
+          ? X_LOCATORS.combinedLoginSubmit
+          : X_LOCATORS.loginSubmit,
         action,
       );
       await locator.click();

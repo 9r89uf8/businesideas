@@ -2,12 +2,18 @@ import {
   anyLocatorVisible,
   anyLocatorVisibleOutsideTimeline,
   anyTextVisibleWithin,
+  findVisibleLocator,
   X_LOCATORS,
 } from "./locators.js";
-import { isAllowedXLoginUrl, isAllowedXUrl } from "./navigation.js";
+import {
+  isAllowedXCombinedLoginUrl,
+  isAllowedXLoginUrl,
+  isAllowedXUrl,
+} from "./navigation.js";
 
 export const X_PAGE_STATES = Object.freeze({
   AUTHENTICATED: "AUTHENTICATED",
+  COMBINED_LOGIN_REQUIRED: "COMBINED_LOGIN_REQUIRED",
   LOGIN_REQUIRED: "LOGIN_REQUIRED",
   USERNAME_REQUIRED: "USERNAME_REQUIRED",
   PASSWORD_REQUIRED: "PASSWORD_REQUIRED",
@@ -53,6 +59,31 @@ export async function detectXPageState(page) {
   if (await anyLocatorVisible(page, X_LOCATORS.authenticated)) {
     return X_PAGE_STATES.AUTHENTICATED;
   }
+
+  if (isAllowedXCombinedLoginUrl(page.url())) {
+    const form = await findVisibleLocator(page, X_LOCATORS.combinedLoginForm);
+    if (!form) return X_PAGE_STATES.UNKNOWN;
+
+    const identifierVisible = await anyLocatorVisible(
+      form.locator,
+      X_LOCATORS.combinedLoginIdentifier,
+    );
+    const passwordVisible = await anyLocatorVisible(
+      form.locator,
+      X_LOCATORS.combinedLoginPassword,
+    );
+    return identifierVisible && passwordVisible
+      ? X_PAGE_STATES.COMBINED_LOGIN_REQUIRED
+      : X_PAGE_STATES.UNKNOWN;
+  }
+
+  if (
+    isAllowedXUrl(page.url()) &&
+    new URL(page.url()).pathname === "/i/jf/onboarding/web"
+  ) {
+    return X_PAGE_STATES.UNKNOWN;
+  }
+
   if (await anyLocatorVisible(page, X_LOCATORS.password)) {
     return X_PAGE_STATES.PASSWORD_REQUIRED;
   }

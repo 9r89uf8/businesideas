@@ -24,6 +24,17 @@ export const X_LOCATORS = Object.freeze({
     css('input[autocomplete="username"]'),
     css('input[name="text"]'),
   ]),
+  combinedLoginForm: Object.freeze([
+    css(
+      'form:has(input[name="username_or_email"][type="text"]):has(input[name="password"][type="password"])',
+    ),
+  ]),
+  combinedLoginIdentifier: Object.freeze([
+    css('input[name="username_or_email"][type="text"]'),
+  ]),
+  combinedLoginPassword: Object.freeze([
+    css('input[name="password"][type="password"]'),
+  ]),
   loginNext: Object.freeze([
     role("button", /^Next$/i),
     text("Next", true),
@@ -40,6 +51,9 @@ export const X_LOCATORS = Object.freeze({
   loginSubmit: Object.freeze([
     role("button", /^Log in$/i),
     css('[data-testid="LoginForm_Login_Button"]'),
+  ]),
+  combinedLoginSubmit: Object.freeze([
+    css('button[type="submit"]:visible:text-is("Continue")'),
   ]),
   forYouTab: Object.freeze([
     role("tab", /^For you$/i),

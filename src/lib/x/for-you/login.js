@@ -10,11 +10,24 @@ import {
 import { findVisibleLocator, X_LOCATORS } from "./locators.js";
 import {
   isAllowedXUrl,
-  requireAllowedXPage,
+  requireAllowedXWorkflowPage,
   requireXHomePage,
+  requireXLoginPage,
 } from "./navigation.js";
 
 const HOME_URL = "https://x.com/home";
+const LOGIN_URL = "https://x.com/i/flow/login";
+
+function isExactXRootLanding(value) {
+  if (!isAllowedXUrl(value)) return false;
+  const url = new URL(value);
+  return (
+    url.origin === "https://x.com" &&
+    url.pathname === "/" &&
+    url.search === "" &&
+    url.hash === ""
+  );
+}
 
 function requiredCredential(value) {
   return typeof value === "string" && value.trim() ? value : null;
@@ -186,11 +199,19 @@ export async function ensureXAuthenticated(
 ) {
   assertPermissionActive();
   await page.goto(HOME_URL, { waitUntil: "domcontentloaded" });
-  requireAllowedXPage(page);
+  requireAllowedXWorkflowPage(page);
+
+  if (isExactXRootLanding(page.url())) {
+    assertPermissionActive();
+    await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
+    assertPermissionActive();
+    requireXLoginPage(page);
+  }
 
   let state = await waitForXPageState(page, {
     acceptedStates: [
       X_PAGE_STATES.AUTHENTICATED,
+      X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
       X_PAGE_STATES.LOGIN_REQUIRED,
       X_PAGE_STATES.USERNAME_REQUIRED,
       X_PAGE_STATES.PASSWORD_REQUIRED,
@@ -222,6 +243,26 @@ export async function ensureXAuthenticated(
   }
 
   log("AUTH_LOGIN_STARTED");
+
+  let submittedCredentials = false;
+
+  if (state === X_PAGE_STATES.COMBINED_LOGIN_REQUIRED) {
+    assertPermissionActive();
+    await performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.FILL_LOGIN_IDENTIFIER,
+      credentials.email,
+    );
+    assertPermissionActive();
+    await performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.FILL_LOGIN_PASSWORD,
+      credentials.password,
+    );
+    assertPermissionActive();
+    await performReadOnlyAction(page, X_READ_ONLY_ACTIONS.CLICK_LOGIN_SUBMIT);
+    submittedCredentials = true;
+  }
 
   if (state === X_PAGE_STATES.LOGIN_REQUIRED) {
     assertPermissionActive();
@@ -257,18 +298,20 @@ export async function ensureXAuthenticated(
     log("AUTH_LOGIN_SUCCEEDED", { method: "credentials" });
     return "credentials";
   }
-  if (state !== X_PAGE_STATES.PASSWORD_REQUIRED) {
+  if (!submittedCredentials && state !== X_PAGE_STATES.PASSWORD_REQUIRED) {
     throw authenticationError("X login did not reach the password step.");
   }
 
-  assertPermissionActive();
-  await performReadOnlyAction(
-    page,
-    X_READ_ONLY_ACTIONS.FILL_LOGIN_PASSWORD,
-    credentials.password,
-  );
-  assertPermissionActive();
-  await performReadOnlyAction(page, X_READ_ONLY_ACTIONS.CLICK_LOGIN_SUBMIT);
+  if (!submittedCredentials) {
+    assertPermissionActive();
+    await performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.FILL_LOGIN_PASSWORD,
+      credentials.password,
+    );
+    assertPermissionActive();
+    await performReadOnlyAction(page, X_READ_ONLY_ACTIONS.CLICK_LOGIN_SUBMIT);
+  }
 
   state = await waitForXPageState(page, {
     acceptedStates: [

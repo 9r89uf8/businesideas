@@ -13,6 +13,15 @@ const ALLOWED_WORKFLOW_PATHS = Object.freeze([
   /^\/i\/flow\/(?:challenge|verify|account_access)(?:\/|$)/,
 ]);
 
+function isExactCombinedLoginUrl(url) {
+  return (
+    url.origin === "https://x.com" &&
+    url.pathname === "/i/jf/onboarding/web" &&
+    url.search === "?mode=login" &&
+    url.hash === ""
+  );
+}
+
 export function isAllowedXUrl(value, { allowBlank = false } = {}) {
   if (allowBlank && value === "about:blank") return true;
 
@@ -32,14 +41,26 @@ export function isAllowedXUrl(value, { allowBlank = false } = {}) {
 
 export function isAllowedXWorkflowUrl(value) {
   if (!isAllowedXUrl(value)) return false;
-  const { pathname } = new URL(value);
+  const url = new URL(value);
+  if (isExactCombinedLoginUrl(url)) return true;
+
+  const { pathname } = url;
   return ALLOWED_WORKFLOW_PATHS.some((pattern) => pattern.test(pathname));
+}
+
+export function isAllowedXCombinedLoginUrl(value) {
+  if (!isAllowedXUrl(value)) return false;
+  return isExactCombinedLoginUrl(new URL(value));
 }
 
 export function isAllowedXLoginUrl(value) {
   if (!isAllowedXUrl(value)) return false;
   const { pathname } = new URL(value);
-  return /^\/login\/?$/.test(pathname) || /^\/i\/flow\/login(?:\/|$)/.test(pathname);
+  return (
+    /^\/login\/?$/.test(pathname) ||
+    /^\/i\/flow\/login(?:\/|$)/.test(pathname) ||
+    isAllowedXCombinedLoginUrl(value)
+  );
 }
 
 export function requireAllowedXPage(page) {
