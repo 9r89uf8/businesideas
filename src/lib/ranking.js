@@ -316,6 +316,7 @@ export function rankPosts(
     now = new Date(),
     limit = PIPELINE.defaultAiInputLimit,
     maxPerAuthor = MAX_POSTS_PER_AUTHOR,
+    prioritySourceChannel = null,
   } = {},
 ) {
   if (!Array.isArray(posts)) {
@@ -403,16 +404,27 @@ export function rankPosts(
     })
     .sort(compareRankedPosts);
 
+  const constraintOrder =
+    typeof prioritySourceChannel === "string" && prioritySourceChannel.length
+      ? [
+          ...ranked.filter(
+            (candidate) =>
+              candidate.source_channel === prioritySourceChannel,
+          ),
+          ...ranked.filter(
+            (candidate) =>
+              candidate.source_channel !== prioritySourceChannel,
+          ),
+        ]
+      : ranked;
   const seenTextHashes = new Set();
   const postsByAuthor = new Map();
-  const selected = [];
+  const constrained = [];
 
-  for (const candidate of ranked) {
+  for (const candidate of constraintOrder) {
     if (seenTextHashes.has(candidate.normalized_text_hash)) {
       continue;
     }
-
-    seenTextHashes.add(candidate.normalized_text_hash);
 
     const authorPostCount = postsByAuthor.get(candidate._authorKey) ?? 0;
 
@@ -420,22 +432,25 @@ export function rankPosts(
       continue;
     }
 
+    seenTextHashes.add(candidate.normalized_text_hash);
     postsByAuthor.set(candidate._authorKey, authorPostCount + 1);
 
+    constrained.push(candidate);
+
+    if (constrained.length >= effectiveLimit) {
+      break;
+    }
+  }
+
+  return constrained.sort(compareRankedPosts).map((candidate) => {
     const {
       _authorKey,
       _originalIndex,
       _postId,
       ...publicCandidate
     } = candidate;
-    selected.push(publicCandidate);
-
-    if (selected.length >= effectiveLimit) {
-      break;
-    }
-  }
-
-  return selected;
+    return publicCandidate;
+  });
 }
 
 /**

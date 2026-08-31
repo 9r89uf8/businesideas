@@ -1,0 +1,9 @@
+.env
+.env.*
+.vercel
+.git
+.next
+node_modules
+.x-for-you
+runtime/x-for-you
+*.x-web-approval.json

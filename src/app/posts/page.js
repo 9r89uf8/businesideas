@@ -5,7 +5,7 @@ import { POST_QUALITY } from "@/lib/config";
 export const metadata = { title: "Source feed" };
 export const dynamic = "force-dynamic";
 
-const SOURCE_FILTERS = new Set(["all", "followed", "topic"]);
+const SOURCE_FILTERS = new Set(["all", "followed", "topic", "for_you"]);
 const VIEW_FILTERS = new Set(["all", "selected", "signals"]);
 
 function clean(value, maximum = 100) {
@@ -36,7 +36,9 @@ function runLabel(run) {
 }
 
 function sourceLabel(channel) {
-  return channel === "followed" ? "Followed account" : "Topic discovery";
+  if (channel === "followed") return "Followed account";
+  if (channel === "for_you") return "For You discovery";
+  return "Topic discovery";
 }
 
 function PostCard({ snapshot, rankingVersion, minimumViews }) {
@@ -154,7 +156,7 @@ function PostCard({ snapshot, rankingVersion, minimumViews }) {
         )}
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-3 text-[0.68rem] text-[var(--ink-soft)]">
-          <span>Search position {snapshot.search_position ?? "—"}</span>
+          <span>{snapshot.source_channel === "for_you" ? "Feed" : "Search"} position {snapshot.search_position ?? "—"}</span>
           <span>{usesCurrentViewFloor ? "50K-qualified score" : usesViewFirstRanking ? "View-first score" : "Legacy score"} {Number.isFinite(snapshot.deterministic_score) ? snapshot.deterministic_score.toFixed(2) : "—"}</span>
         </div>
       </div>
@@ -224,6 +226,7 @@ export default async function PostsPage({ searchParams }) {
     : POST_QUALITY.minimumViews;
   const followedSelected = Number(counts.sent_to_luna_followed) || 0;
   const topicSelected = Number(counts.sent_to_luna_topic) || 0;
+  const forYouSelected = Number(counts.sent_to_luna_for_you) || 0;
 
   return (
     <main className="shell py-9 sm:py-12">
@@ -254,6 +257,7 @@ export default async function PostsPage({ searchParams }) {
             <option value="all">All sources</option>
             <option value="followed">Followed accounts</option>
             <option value="topic">Topic discovery</option>
+            <option value="for_you">For You discovery</option>
           </select>
         </label>
         <label className="text-xs font-bold">
@@ -268,7 +272,7 @@ export default async function PostsPage({ searchParams }) {
       </form>
 
       {selectedRun && (
-        <section className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+        <section className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
           <div className="panel px-4 py-4">
             <p className="font-mono text-2xl font-semibold">{Number(counts.x_returned) || 0}</p>
             <p className="mt-1 text-xs font-semibold text-[var(--ink-soft)]">Collected</p>
@@ -284,6 +288,10 @@ export default async function PostsPage({ searchParams }) {
           <div className="panel px-4 py-4">
             <p className="font-mono text-2xl font-semibold">{topicSelected}</p>
             <p className="mt-1 text-xs font-semibold text-[var(--ink-soft)]">Topic selected</p>
+          </div>
+          <div className="panel px-4 py-4">
+            <p className="font-mono text-2xl font-semibold">{forYouSelected}</p>
+            <p className="mt-1 text-xs font-semibold text-[var(--ink-soft)]">For You selected</p>
           </div>
           <div className="panel px-4 py-4">
             <p className="font-mono text-2xl font-semibold">{Number(counts.relevant_signals) || 0}</p>

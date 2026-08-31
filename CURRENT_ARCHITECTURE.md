@@ -1561,3 +1561,40 @@ These are current operating boundaries, not alternate execution paths.
 - [Supabase MCP authentication](https://supabase.com/docs/guides/auth/oauth-server/mcp-authentication)
 - [Supabase OAuth server setup](https://supabase.com/docs/guides/auth/oauth-server/getting-started)
 - [Supabase OAuth token security](https://supabase.com/docs/guides/auth/oauth-server/token-security)
+
+## 29. Optional X For You cloud collector
+
+This is an additive discovery lane. It does not replace the official followed
+account or topic recent-search requests.
+
+At the beginning of the daily Vercel Workflow,
+`src/workflows/x-for-you-cloud-steps.js` requires both
+`X_WEB_AUTOMATION_ENABLED=true` and a syntactically valid
+`X_WEB_AUTOMATION_APPROVED_ACCOUNT`. If either value is absent or invalid, no
+AWS call is made. When enabled, the Workflow creates one one-use Workflow
+webhook, assumes the production-pinned Vercel OIDC role, starts EC2
+`i-064c47109859601d1` in `us-east-2`, and invokes the installed collector with
+SSM Run Command. The instance is stopped in the Workflow cleanup path; SSM and
+systemd also enforce 20- and 25-minute shutdown bounds.
+
+The EC2 collector retrieves exactly `X_LOGIN_EMAIL`, `X_LOGIN_USERNAME`, and
+`X_LOGIN_PASSWORD` from AWS Secrets Manager `signal-foundry/x-for-you` through
+its instance role. It verifies that the live X account matches the approved
+handle, uses only the allowlisted read-only browser actions, and returns at most
+100 unique post IDs with feed positions. Passwords, cookies, post text, and
+browser state never cross the callback boundary. Challenge or account drift
+fails closed without interaction.
+
+The Vercel Workflow hydrates accepted IDs through the existing official X
+lookup client, applies the normal date, repost, quote, view-quality, duplicate,
+ranking, retention, and RLS rules, and writes the new lane as
+`source_channel = 'for_you'`. Migration
+`005_for_you_source_channel.sql` extends only that check constraint. Browser or
+AWS failure returns an empty optional lane and leaves the official collection
+path running.
+
+AWS infrastructure is owned by the `signal-foundry-x-for-you` and
+`signal-foundry-vercel-x-for-you-oidc` CloudFormation stacks. Deployment source
+is stored only under the private, versioned S3 `deployment/` prefix; results do
+not use S3. Human approval expiry is an operator/renewal concern and does not
+add another runtime flag or service.

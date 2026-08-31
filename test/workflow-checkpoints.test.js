@@ -256,8 +256,8 @@ test("fetch retries replace the candidate snapshot instead of leaking stale sour
   const fetchStart = workflowSource.indexOf("export async function fetchAndRank");
   const extractionStart = workflowSource.indexOf("export async function extractSignals");
   const fetchBlock = workflowSource.slice(fetchStart, extractionStart);
-  const deleteIndex = fetchBlock.indexOf('.from("run_posts")\n    .delete()');
-  const candidateUpsertIndex = fetchBlock.indexOf('.from("run_posts")\n      .upsert');
+  const deleteIndex = fetchBlock.search(/\.from\("run_posts"\)\r?\n    \.delete\(\)/);
+  const candidateUpsertIndex = fetchBlock.search(/\.from\("run_posts"\)\r?\n      \.upsert/);
 
   assert.ok(deleteIndex >= 0);
   assert.ok(candidateUpsertIndex > deleteIndex);

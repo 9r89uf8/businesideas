@@ -36,6 +36,7 @@ import {
   refreshRetainedEvidence,
   upsertCurrentPosts,
 } from "../lib/x/retention.js";
+import { hydrateAndMergeForYouPosts } from "../lib/x/for-you-hydration.js";
 import { searchHybridRecentPosts } from "../lib/x/search-posts.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -119,7 +120,11 @@ function retryXRateLimit(error) {
   throw error;
 }
 
-export async function fetchAndRank({ runId, ownerId }) {
+export async function fetchAndRank({
+  runId,
+  ownerId,
+  forYouCandidates = [],
+}) {
   "use step";
 
   requireWorkflowArgs({ runId, ownerId });
@@ -176,6 +181,20 @@ export async function fetchAndRank({ runId, ownerId }) {
     retryXRateLimit(error);
   }
 
+  if (forYouCandidates.length) {
+    try {
+      searchResult = await hydrateAndMergeForYouPosts({
+        searchResult,
+        candidates: forYouCandidates,
+        windowStart: run.window_start,
+        windowEnd: run.window_end,
+      });
+    } catch {
+      // This optional discovery lane must never discard the official X API
+      // followed/topic result.
+    }
+  }
+
   const posts = searchResult.posts;
   // A workflow retry may reach this point after either write below committed.
   // Both canonical records and per-run snapshots therefore use their declared
@@ -210,7 +229,10 @@ export async function fetchAndRank({ runId, ownerId }) {
 
   const ranked = rankPosts(searchResult.rankablePosts, {
     now: searchResult.meta.metricsCapturedAt,
-    limit: run.settings_snapshot.candidate_limit,
+    // The browser lane is additive; prioritize the existing followed-account
+    // lane before cross-channel deduplication and author caps.
+    limit: searchResult.rankablePosts.length,
+    prioritySourceChannel: "followed",
   });
   const selected = selectHybridAiInput(ranked, {
     limit: run.settings_snapshot.ai_input_limit,
@@ -232,6 +254,27 @@ export async function fetchAndRank({ runId, ownerId }) {
     throwDatabaseError(rankingError, "saving deterministic rankings");
   }
 
+  const forYouCounts = searchResult.meta.forYouRequested === undefined
+    ? {}
+    : {
+        x_for_you_requested: searchResult.meta.forYouRequested,
+        x_for_you_hydrated: searchResult.meta.forYouHydrated,
+        x_for_you_returned: searchResult.meta.forYouReturned,
+        x_for_you_unavailable: searchResult.meta.forYouUnavailable,
+        x_for_you_unknown: searchResult.meta.forYouUnknown,
+        x_for_you_outside_window: searchResult.meta.forYouOutsideWindow,
+        x_for_you_cross_channel_duplicates:
+          searchResult.meta.forYouCrossChannelDuplicates,
+        x_for_you_reposts_rejected:
+          searchResult.meta.forYouRepostsRejected,
+        x_for_you_quotes_rejected: searchResult.meta.forYouQuotesRejected,
+        x_for_you_view_quality_rejected:
+          searchResult.meta.forYouViewQualityRejected,
+        x_for_you_quality_passed: searchResult.meta.forYouQualityPassed,
+        sent_to_luna_for_you: selected.filter(
+          (post) => post.source_channel === "for_you",
+        ).length,
+      };
   const counts = {
     ...(run.counts || {}),
     x_returned: posts.length,
@@ -253,6 +296,7 @@ export async function fetchAndRank({ runId, ownerId }) {
     sent_to_luna_topic: selected.filter(
       (post) => post.source_channel === "topic",
     ).length,
+    ...forYouCounts,
     x_partial: searchResult.partial,
   };
 

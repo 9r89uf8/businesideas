@@ -1,0 +1,6 @@
+[Unit]
+Description=Stop the Signal Foundry X For You worker after its boot lease
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/shutdown -h now

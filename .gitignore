@@ -39,6 +39,11 @@ yarn-error.log*
 # local Vercel Workflow state
 .workflow-data/
 
+# defense in depth for optional local X web-collector state
+/.x-for-you/
+/runtime/x-for-you/
+/*.x-web-approval.json
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

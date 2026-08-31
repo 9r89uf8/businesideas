@@ -1,0 +1,261 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Disabled-by-default Signal Foundry X For You collector worker. Provisions
+  one SSM-managed EC2 instance, an encrypted deployment bucket, a
+  credentials-only Secrets Manager resource, and least-privilege instance IAM.
+  No X credential value or authorization value is provisioned by this stack.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+  UbuntuAmiId:
+    Type: AWS::EC2::Image::Id
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues:
+      - t3.small
+      - t3.medium
+
+Resources:
+  CollectorBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub signal-foundry-x-for-you-${AWS::AccountId}-${AWS::Region}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      Tags:
+        - Key: Project
+          Value: SignalFoundry
+        - Key: Component
+          Value: XForYouCollector
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  CollectorBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CollectorBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt CollectorBucket.Arn
+              - !Sub ${CollectorBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+          - Sid: RequireSseS3ForObjectWrites
+            Effect: Deny
+            Principal: "*"
+            Action: s3:PutObject
+            Resource: !Sub ${CollectorBucket.Arn}/*
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: AES256
+
+  CollectorSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: signal-foundry/x-for-you
+      Description: >-
+        Holds only the X login email, username, and password. The value is
+        managed out of band so stack updates can never overwrite credentials.
+      Tags:
+        - Key: Project
+          Value: SignalFoundry
+        - Key: Component
+          Value: XForYouCollector
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  CollectorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: CollectorRuntimeAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadCollectorSecret
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref CollectorSecret
+              - Sid: LocateDeploymentBucket
+                Effect: Allow
+                Action: s3:GetBucketLocation
+                Resource: !GetAtt CollectorBucket.Arn
+              - Sid: ListCollectorPrefixes
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt CollectorBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - deployment/*
+              - Sid: ReadDeploymentBundle
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub ${CollectorBucket.Arn}/deployment/*
+      Tags:
+        - Key: Project
+          Value: SignalFoundry
+        - Key: Component
+          Value: XForYouCollector
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  CollectorInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref CollectorRole
+
+  CollectorSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Egress-only security group for the X For You worker
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS egress for X and AWS service APIs
+      Tags:
+        - Key: Name
+          Value: signal-foundry-x-for-you
+        - Key: Project
+          Value: SignalFoundry
+        - Key: Component
+          Value: XForYouCollector
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  CollectorInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref UbuntuAmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref CollectorInstanceProfile
+      InstanceInitiatedShutdownBehavior: stop
+      Monitoring: false
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+        InstanceMetadataTags: enabled
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeleteOnTermination: true
+          DeviceIndex: "0"
+          GroupSet:
+            - !Ref CollectorSecurityGroup
+          SubnetId: !Ref SubnetId
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            DeleteOnTermination: true
+            Encrypted: true
+            VolumeSize: 20
+            VolumeType: gp3
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+
+          find /etc/apt -maxdepth 2 -type f \
+            \( -name '*.list' -o -name '*.sources' \) \
+            -exec sed -i 's|http://|https://|g' {} +
+          apt-get update
+          apt-get install -y ca-certificates curl gnupg unzip xauth xvfb
+
+          curl -fsSLo /tmp/nodesource-setup.sh https://deb.nodesource.com/setup_22.x
+          bash /tmp/nodesource-setup.sh
+          apt-get install -y nodejs
+
+          curl -fsSLo /tmp/google-chrome.deb \
+            https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          apt-get install -y /tmp/google-chrome.deb
+
+          curl -fsSLo /tmp/awscliv2.zip \
+            https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp
+          /tmp/aws/install --update
+
+          if ! swapon --show=NAME --noheadings | grep -q .; then
+            fallocate -l 2G /swapfile
+            chmod 0600 /swapfile
+            mkswap /swapfile
+            swapon /swapfile
+            printf '%s\n' '/swapfile none swap sw 0 0' >> /etc/fstab
+          fi
+
+          systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service \
+            || systemctl enable --now amazon-ssm-agent.service \
+            || true
+
+          install -d -m 0755 /var/lib/signal-foundry
+          touch /var/lib/signal-foundry/bootstrap-packages-ready
+          rm -rf /tmp/aws /tmp/awscliv2.zip /tmp/google-chrome.deb \
+            /tmp/nodesource-setup.sh
+      Tags:
+        - Key: Name
+          Value: signal-foundry-x-for-you
+        - Key: Project
+          Value: SignalFoundry
+        - Key: Component
+          Value: XForYouCollector
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: FeatureState
+          Value: Disabled
+
+Outputs:
+  BucketName:
+    Value: !Ref CollectorBucket
+  SecretArn:
+    Value: !Ref CollectorSecret
+  InstanceId:
+    Value: !Ref CollectorInstance
+  SecurityGroupId:
+    Value: !Ref CollectorSecurityGroup
+  InstanceRoleArn:
+    Value: !GetAtt CollectorRole.Arn
