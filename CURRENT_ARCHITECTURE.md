@@ -1719,8 +1719,8 @@ volume is retained for the worker runtime. Secret-free source bundles are
 retained as encrypted, versioned objects under the bucket's `deployment/`
 prefix. SSM installation and disabled-configuration verification succeeded for
 bundle SHA-256
-`13ad417ff98640cca5b8b8a65cdc6703a4a5a0f5465a84469df6d508323b39c4`
-(S3 version `puFN11Ax6nKuz5pwK00h6MNFCgQp8i0_`). The instance was then confirmed
+`350b30906a770e0928610407a4908c11dfda725a2db1dffdc86abd91bf0c0b9b`
+(S3 version `2O91TCU4lYauOIhBTSw4TYHIRFTtyesC`). The instance was then confirmed
 `stopped`. Its persistent configuration contains no enabled authorization
 values, the systemd boot lease is active, the disabled check returned
 `FEATURE_DISABLED`, and no Chrome process or X request was part of
