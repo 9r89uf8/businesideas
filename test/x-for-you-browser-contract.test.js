@@ -710,15 +710,18 @@ test("workflow navigation allows only the exact X root landing path", () => {
   }
 });
 
-test("combined login navigation allows only X's exact observed mode", async () => {
+test("combined login navigation allows only X's exact observed transitions", async () => {
   const exact = "https://x.com/i/jf/onboarding/web?mode=login";
+  const postLogin = "https://x.com/i/jf/onboarding/web";
   assert.equal(isAllowedXCombinedLoginUrl(exact), true);
   assert.equal(isAllowedXLoginUrl(exact), true);
   assert.equal(isAllowedXWorkflowUrl(exact), true);
+  assert.equal(isAllowedXCombinedLoginUrl(postLogin), false);
+  assert.equal(isAllowedXLoginUrl(postLogin), false);
+  assert.equal(isAllowedXWorkflowUrl(postLogin), true);
 
   for (const url of [
     "https://www.x.com/i/jf/onboarding/web?mode=login",
-    "https://x.com/i/jf/onboarding/web",
     "https://x.com/i/jf/onboarding/web/?mode=login",
     "https://x.com/i/jf/onboarding/web?mode=signup",
     "https://x.com/i/jf/onboarding/web?mode=login&mode=login",
@@ -735,6 +738,10 @@ test("combined login navigation allows only X's exact observed mode", async () =
   const page = new FakePage({ state: X_PAGE_STATES.UNKNOWN });
   const guard = await installNavigationGuard(page);
   assert.deepEqual(await page.dispatchRequest(exact), {
+    aborted: null,
+    continued: true,
+  });
+  assert.deepEqual(await page.dispatchRequest(postLogin), {
     aborted: null,
     continued: true,
   });

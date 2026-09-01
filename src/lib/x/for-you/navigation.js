@@ -22,6 +22,15 @@ function isExactCombinedLoginUrl(url) {
   );
 }
 
+function isExactPostLoginTransitionUrl(url) {
+  return (
+    url.origin === "https://x.com" &&
+    url.pathname === "/i/jf/onboarding/web" &&
+    url.search === "" &&
+    url.hash === ""
+  );
+}
+
 export function isAllowedXUrl(value, { allowBlank = false } = {}) {
   if (allowBlank && value === "about:blank") return true;
 
@@ -58,7 +67,12 @@ export function isAllowedXHomeUrl(value) {
 export function isAllowedXWorkflowUrl(value) {
   if (!isAllowedXUrl(value)) return false;
   const url = new URL(value);
-  if (isExactCombinedLoginUrl(url)) return true;
+  if (
+    isExactCombinedLoginUrl(url) ||
+    isExactPostLoginTransitionUrl(url)
+  ) {
+    return true;
+  }
 
   const { pathname } = url;
   return ALLOWED_WORKFLOW_PATHS.some((pattern) => pattern.test(pathname));
