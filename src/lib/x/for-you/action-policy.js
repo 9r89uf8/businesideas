@@ -188,7 +188,6 @@ export async function performReadOnlyAction(
             action,
             assertPermissionActive,
             {
-              formSpecs: X_LOCATORS.combinedLoginPasswordForm,
               controlSpecs: X_LOCATORS.combinedLoginSubmit,
             },
           )

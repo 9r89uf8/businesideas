@@ -912,14 +912,9 @@ test("locator fallback survives one detached locator and rejects unknown specs",
 test("combined login method controls use exact accessible button names", () => {
   const [continueSpec] = X_LOCATORS.combinedLoginContinue;
   const [usePasswordSpec] = X_LOCATORS.loginUsePassword;
-  const [submitSpec, submitFallbackSpec] = X_LOCATORS.combinedLoginSubmit;
+  const [submitSpec] = X_LOCATORS.combinedLoginSubmit;
 
-  for (const spec of [
-    continueSpec,
-    usePasswordSpec,
-    submitSpec,
-    submitFallbackSpec,
-  ]) {
+  for (const spec of [continueSpec, usePasswordSpec, submitSpec]) {
     assert.equal(spec.kind, "role");
     assert.equal(spec.role, "button");
   }
@@ -931,11 +926,9 @@ test("combined login method controls use exact accessible button names", () => {
     nameMatches(usePasswordSpec.name, "Use a password manager"),
     false,
   );
-  assert.equal(nameMatches(submitSpec.name, "Log in"), true);
-  assert.equal(nameMatches(submitSpec.name, "Log in with Google"), false);
-  assert.equal(nameMatches(submitFallbackSpec.name, "Continue"), true);
+  assert.equal(nameMatches(submitSpec.name, "Continue"), true);
   assert.equal(
-    nameMatches(submitFallbackSpec.name, "Continue with phone"),
+    nameMatches(submitSpec.name, "Continue with phone"),
     false,
   );
 });

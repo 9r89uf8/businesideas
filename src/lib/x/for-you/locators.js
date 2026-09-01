@@ -62,9 +62,7 @@ export const X_LOCATORS = Object.freeze({
     role("button", /^Use password$/i),
   ]),
   combinedLoginSubmit: Object.freeze([
-    role("button", /^Log in$/i),
     role("button", /^Continue$/i),
-    css('button[type="submit"]'),
   ]),
   forYouTab: Object.freeze([
     role("tab", /^For you$/i),
