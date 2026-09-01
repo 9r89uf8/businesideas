@@ -1709,7 +1709,7 @@ This disabled bootstrap is safe before approval: the Vercel lane makes no AWS
 call while disabled, and direct worker verification fails at the feature flag
 before a secret read, Playwright import, browser launch, or X request.
 
-As of 2026-08-30, CloudFormation stack `signal-foundry-x-for-you` is
+As of 2026-09-01, CloudFormation stack `signal-foundry-x-for-you` is
 `UPDATE_COMPLETE` in `us-east-2`. It owns stopped instance
 `i-064c47109859601d1`, private versioned bucket
 `signal-foundry-x-for-you-563561751769-us-east-2`, credentials-secret resource
@@ -1717,9 +1717,10 @@ As of 2026-08-30, CloudFormation stack `signal-foundry-x-for-you` is
 `sg-056fcfcb84a8247e8` with TCP 443-only egress. The encrypted 20 GiB gp3 root
 volume is retained for the worker runtime. Secret-free source bundles are
 retained as encrypted, versioned objects under the bucket's `deployment/`
-prefix. SSM installation and disabled-mode verification succeeded for bundle
-SHA-256 `d46de023cc015ae705da92daabc3e31879a477204d1ff185b1cecbccb2326b10`
-(S3 version `7y3igTXo6oupv32kFR2lTBDsqQB9a6LY`). The instance was then confirmed
+prefix. SSM installation and disabled-configuration verification succeeded for
+bundle SHA-256
+`13ad417ff98640cca5b8b8a65cdc6703a4a5a0f5465a84469df6d508323b39c4`
+(S3 version `puFN11Ax6nKuz5pwK00h6MNFCgQp8i0_`). The instance was then confirmed
 `stopped`. Its persistent configuration contains no enabled authorization
 values, the systemd boot lease is active, the disabled check returned
 `FEATURE_DISABLED`, and no Chrome process or X request was part of
