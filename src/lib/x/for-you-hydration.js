@@ -1,6 +1,5 @@
 import "server-only";
 
-import { PIPELINE } from "../config.js";
 import {
   isQuotePost,
   isRepost,
@@ -8,6 +7,7 @@ import {
 } from "../ranking.js";
 import { lookupPosts } from "./lookup-posts.js";
 
+const MAXIMUM_CANDIDATES = 100;
 const X_POST_ID_PATTERN = /^[1-9][0-9]{0,18}$/;
 const MINIMUM_FEED_POSITION = 1;
 const MAXIMUM_FEED_POSITION = 100;
@@ -42,9 +42,9 @@ export function normalizeForYouCandidates(value) {
   if (!Array.isArray(value)) {
     throw new TypeError("For You candidates must be an array.");
   }
-  if (value.length > PIPELINE.maxCandidates) {
+  if (value.length > MAXIMUM_CANDIDATES) {
     throw new RangeError(
-      `For You candidates cannot exceed ${PIPELINE.maxCandidates} posts.`,
+      `For You candidates cannot exceed ${MAXIMUM_CANDIDATES} posts.`,
     );
   }
 

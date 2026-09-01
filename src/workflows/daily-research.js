@@ -145,7 +145,8 @@ async function collectOptionalForYouCandidates() {
         instanceId: activation.instanceId,
       });
     } catch {
-      // The optional lane must not block the official-API research path.
+      // The optional lane must not block the official-API research path; the
+      // EC2 boot lease remains the final shutdown backstop.
     } finally {
       webhook.dispose();
     }

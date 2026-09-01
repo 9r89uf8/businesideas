@@ -10,11 +10,24 @@ import {
 import { findVisibleLocator, X_LOCATORS } from "./locators.js";
 import {
   isAllowedXUrl,
-  requireAllowedXPage,
+  isExactXRootLanding,
+  requireAllowedXWorkflowPage,
   requireXHomePage,
+  requireXLoginPage,
 } from "./navigation.js";
 
 const HOME_URL = "https://x.com/home";
+const LOGIN_URL = "https://x.com/i/flow/login";
+
+const LOGIN_ENTRY_STATES = Object.freeze([
+  X_PAGE_STATES.AUTHENTICATED,
+  X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
+  X_PAGE_STATES.USE_PASSWORD_REQUIRED,
+  X_PAGE_STATES.LOGIN_REQUIRED,
+  X_PAGE_STATES.USERNAME_REQUIRED,
+  X_PAGE_STATES.PASSWORD_REQUIRED,
+  X_PAGE_STATES.CHALLENGE,
+]);
 
 function requiredCredential(value) {
   return typeof value === "string" && value.trim() ? value : null;
@@ -151,9 +164,15 @@ async function requirePasswordStep(page, options, initialState = null) {
       page,
       X_READ_ONLY_ACTIONS.FILL_LOGIN_USERNAME,
       options.credentials.username.replace(/^@/, ""),
+      { assertPermissionActive: options.assertPermissionActive },
     );
     options.assertPermissionActive();
-    await performReadOnlyAction(page, X_READ_ONLY_ACTIONS.CLICK_LOGIN_NEXT);
+    await performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.CLICK_LOGIN_NEXT,
+      undefined,
+      { assertPermissionActive: options.assertPermissionActive },
+    );
     state = await waitForXPageState(page, {
       acceptedStates: [
         X_PAGE_STATES.PASSWORD_REQUIRED,
@@ -173,6 +192,23 @@ async function requirePasswordStep(page, options, initialState = null) {
   return state;
 }
 
+async function waitForCombinedTransition(page, acceptedStates, options) {
+  const state = await waitForXPageState(page, {
+    acceptedStates,
+    timeoutMs: options.stateTimeoutMs,
+    assertPermissionActive: options.assertPermissionActive,
+  });
+  if (state !== X_PAGE_STATES.UNKNOWN) return state;
+
+  // The one-time-code surface can render just before its exact password
+  // alternative. Poll only for explicitly accepted states, then classify the
+  // settled surface once. No verification-code control is ever actioned.
+  options.assertPermissionActive();
+  const settledState = await detectXPageState(page);
+  options.assertPermissionActive();
+  return settledState;
+}
+
 export async function ensureXAuthenticated(
   page,
   {
@@ -186,19 +222,31 @@ export async function ensureXAuthenticated(
 ) {
   assertPermissionActive();
   await page.goto(HOME_URL, { waitUntil: "domcontentloaded" });
-  requireAllowedXPage(page);
+  requireAllowedXWorkflowPage(page);
 
   let state = await waitForXPageState(page, {
     acceptedStates: [
-      X_PAGE_STATES.AUTHENTICATED,
-      X_PAGE_STATES.LOGIN_REQUIRED,
-      X_PAGE_STATES.USERNAME_REQUIRED,
-      X_PAGE_STATES.PASSWORD_REQUIRED,
-      X_PAGE_STATES.CHALLENGE,
+      ...LOGIN_ENTRY_STATES,
+      X_PAGE_STATES.ROOT_LANDING,
     ],
     timeoutMs: stateTimeoutMs,
     assertPermissionActive,
   });
+
+  if (state === X_PAGE_STATES.ROOT_LANDING) {
+    // Logged-out X can briefly render its safe root SPA shell both before and
+    // after this fixed-route navigation. Never inspect or act on that shell;
+    // the bounded state poll below waits for an approved login surface.
+    assertPermissionActive();
+    await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
+    assertPermissionActive();
+    requireAllowedXWorkflowPage(page);
+    state = await waitForXPageState(page, {
+      acceptedStates: LOGIN_ENTRY_STATES,
+      timeoutMs: stateTimeoutMs,
+      assertPermissionActive,
+    });
+  }
 
   if (state === X_PAGE_STATES.AUTHENTICATED) {
     log("AUTH_SESSION_REUSED");
@@ -216,6 +264,17 @@ export async function ensureXAuthenticated(
     return "manual";
   }
 
+  if (![
+    X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
+    X_PAGE_STATES.USE_PASSWORD_REQUIRED,
+    X_PAGE_STATES.LOGIN_REQUIRED,
+    X_PAGE_STATES.USERNAME_REQUIRED,
+    X_PAGE_STATES.PASSWORD_REQUIRED,
+  ].includes(state)) {
+    throw authenticationError("X login did not reach an approved login state.");
+  }
+  requireXLoginPage(page);
+
   const credentials = resolveXLoginCredentials(env);
   if (!credentials.email || !credentials.password) {
     throw authenticationError("X login credentials are unavailable.");
@@ -223,15 +282,91 @@ export async function ensureXAuthenticated(
 
   log("AUTH_LOGIN_STARTED");
 
+  let submittedPassword = false;
+
+  if (state === X_PAGE_STATES.COMBINED_LOGIN_REQUIRED) {
+    assertPermissionActive();
+    await performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.FILL_LOGIN_IDENTIFIER,
+      credentials.email,
+      { assertPermissionActive },
+    );
+    assertPermissionActive();
+    await performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.CLICK_LOGIN_NEXT,
+      undefined,
+      { assertPermissionActive },
+    );
+    state = await waitForCombinedTransition(
+      page,
+      [
+        X_PAGE_STATES.USE_PASSWORD_REQUIRED,
+        X_PAGE_STATES.AUTHENTICATED,
+      ],
+      { stateTimeoutMs, assertPermissionActive },
+    );
+  }
+
+  if (state === X_PAGE_STATES.CHALLENGE) {
+    await waitForManualChallenge(page, {
+      interactiveChallenges,
+      manualActionTimeoutMs,
+      stateTimeoutMs,
+      assertPermissionActive,
+      log,
+    });
+    log("AUTH_LOGIN_SUCCEEDED", { method: "manual" });
+    return "manual";
+  }
+
+  if (state === X_PAGE_STATES.USE_PASSWORD_REQUIRED) {
+    assertPermissionActive();
+    await performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.CLICK_LOGIN_USE_PASSWORD,
+      undefined,
+      { assertPermissionActive },
+    );
+    state = await waitForCombinedTransition(
+      page,
+      [
+        X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
+        X_PAGE_STATES.PASSWORD_REQUIRED,
+        X_PAGE_STATES.AUTHENTICATED,
+      ],
+      { stateTimeoutMs, assertPermissionActive },
+    );
+  }
+
+  if (state === X_PAGE_STATES.CHALLENGE) {
+    await waitForManualChallenge(page, {
+      interactiveChallenges,
+      manualActionTimeoutMs,
+      stateTimeoutMs,
+      assertPermissionActive,
+      log,
+    });
+    log("AUTH_LOGIN_SUCCEEDED", { method: "manual" });
+    return "manual";
+  }
+
   if (state === X_PAGE_STATES.LOGIN_REQUIRED) {
     assertPermissionActive();
     await performReadOnlyAction(
       page,
       X_READ_ONLY_ACTIONS.FILL_LOGIN_IDENTIFIER,
       credentials.email,
+      { assertPermissionActive },
     );
     assertPermissionActive();
-    await performReadOnlyAction(page, X_READ_ONLY_ACTIONS.CLICK_LOGIN_NEXT);
+    await performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.CLICK_LOGIN_NEXT,
+      undefined,
+      { assertPermissionActive },
+    );
     state = await requirePasswordStep(page, {
       credentials,
       interactiveChallenges,
@@ -257,18 +392,31 @@ export async function ensureXAuthenticated(
     log("AUTH_LOGIN_SUCCEEDED", { method: "credentials" });
     return "credentials";
   }
-  if (state !== X_PAGE_STATES.PASSWORD_REQUIRED) {
+  if (
+    !submittedPassword &&
+    state !== X_PAGE_STATES.PASSWORD_REQUIRED &&
+    state !== X_PAGE_STATES.COMBINED_LOGIN_REQUIRED
+  ) {
     throw authenticationError("X login did not reach the password step.");
   }
 
-  assertPermissionActive();
-  await performReadOnlyAction(
-    page,
-    X_READ_ONLY_ACTIONS.FILL_LOGIN_PASSWORD,
-    credentials.password,
-  );
-  assertPermissionActive();
-  await performReadOnlyAction(page, X_READ_ONLY_ACTIONS.CLICK_LOGIN_SUBMIT);
+  if (!submittedPassword) {
+    assertPermissionActive();
+    await performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.FILL_LOGIN_PASSWORD,
+      credentials.password,
+      { assertPermissionActive },
+    );
+    assertPermissionActive();
+    await performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.CLICK_LOGIN_SUBMIT,
+      undefined,
+      { assertPermissionActive },
+    );
+    submittedPassword = true;
+  }
 
   state = await waitForXPageState(page, {
     acceptedStates: [

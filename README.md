@@ -349,7 +349,35 @@ npm test -- --test-isolation=none
 npm run build
 ```
 
-## Deployment
+## Optional cloud For You source
+
+The existing official X API sources remain unchanged. When both production
+values below are present, the daily Vercel Workflow also starts the pinned AWS
+worker, collects up to 100 ordered post IDs from the approved account's
+read-only For You feed, hydrates those IDs through the official X lookup API,
+and persists eligible rows as `source_channel = 'for_you'`.
+
+```text
+X_WEB_AUTOMATION_ENABLED=true
+X_WEB_AUTOMATION_APPROVED_ACCOUNT=@approved_handle
+```
+
+The worker is EC2 `i-064c47109859601d1` in `us-east-2`. Vercel assumes the
+production-only role `signal-foundry-vercel-x-for-you`, invokes the installed
+collector through SSM, and stops the instance in a workflow `finally` block.
+The instance has its own 25-minute shutdown backstop. Login material stays in
+AWS Secrets Manager at `signal-foundry/x-for-you`; it is never stored in
+Vercel or returned by the collector. A successful callback contains only post
+IDs and feed positions; a failed callback contains only a bounded safe error
+code.
+
+Apply
+[`005_for_you_source_channel.sql`](./supabase/migrations/005_for_you_source_channel.sql)
+before enabling the two values. The optional lane fails closed for browser
+access and fails open for the existing research run, so it cannot replace or
+block the official X API paths.
+
+## Deployment and worker setup
 
 [`vercel.json`](./vercel.json) invokes `/api/cron/daily` at 13:00 UTC. Add the
 required environment variables to Vercel and deploy the version containing

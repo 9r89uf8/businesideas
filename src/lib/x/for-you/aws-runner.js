@@ -400,6 +400,7 @@ export async function runAwsCollectorCommand({
         "X web automation is disabled.",
       );
     }
+    assertSafeBrowserEnvironment(env);
     if (
       mode !== COLLECTOR_COMMAND_MODES.CHECK &&
       mode !== COLLECTOR_COMMAND_MODES.COLLECT
@@ -412,7 +413,6 @@ export async function runAwsCollectorCommand({
     resultUrl = mode === COLLECTOR_COMMAND_MODES.COLLECT
       ? normalizeForYouResultUrl(env.X_FOR_YOU_RESULT_URL)
       : null;
-    assertSafeBrowserEnvironment(env);
     const secretId = requireAwsSecretId(env.X_FOR_YOU_AWS_SECRET_ID);
     const approvedAccount = requireBoundedString(
       env.X_WEB_AUTOMATION_APPROVED_ACCOUNT,

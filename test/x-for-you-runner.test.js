@@ -225,6 +225,7 @@ async function loadRunnerWithFakes(
            assertSafe() {
              state.calls.navigationChecks += 1;
            },
+           completeLogin() {},
          });
        }
       `,

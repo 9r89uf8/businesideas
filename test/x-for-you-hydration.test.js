@@ -16,6 +16,8 @@ registerHooks({
   },
 });
 
+const { POST_QUALITY } = await import("../src/lib/config.js");
+
 const {
   hydrateAndMergeForYouPosts,
   normalizeForYouCandidates,
@@ -31,7 +33,7 @@ function makePost(id, overrides = {}) {
     conversation_id: id,
     referenced_tweets: [],
     public_metrics: {
-      impression_count: 25_000,
+      impression_count: POST_QUALITY.minimumViews,
       reply_count: 3,
       like_count: 20,
       bookmark_count: 5,
@@ -160,7 +162,7 @@ test("For You hydrations preserve feed positions and enter only the existing eli
           }),
           makePost("206", {
             public_metrics: {
-              impression_count: 18_999,
+              impression_count: POST_QUALITY.minimumViews - 1,
               reply_count: 100,
               like_count: 100,
               bookmark_count: 100,

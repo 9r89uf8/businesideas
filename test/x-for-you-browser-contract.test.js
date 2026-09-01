@@ -17,6 +17,10 @@ import {
 } from "../src/lib/x/for-you/login.js";
 import {
   installNavigationGuard,
+  isAllowedXCombinedLoginUrl,
+  isAllowedXLoginRedirectUrl,
+  isAllowedXLoginUrl,
+  isAllowedXWorkflowUrl,
   isAllowedXUrl,
   requireAllowedXPage,
   sanitizePageUrl,
@@ -54,6 +58,43 @@ function isLoginIdentifier(spec) {
         'input[autocomplete="username"]',
         'input[name="text"]',
       ].includes(spec.selector))
+  );
+}
+
+function isCombinedLoginIdentifier(spec) {
+  return (
+    spec.kind === "css" &&
+    spec.selector === 'input[name="username_or_email"][type="text"]'
+  );
+}
+
+function isCombinedLoginForm(spec) {
+  return (
+    spec.kind === "css" &&
+    spec.selector ===
+      'form:has(input[name="username_or_email"][type="text"]):has(input[name="password"][type="password"])'
+  );
+}
+
+function isCombinedLoginIdentifierForm(spec) {
+  return (
+    spec.kind === "css" &&
+    spec.selector ===
+      'form:has(input[name="username_or_email"][type="text"])'
+  );
+}
+
+function isCombinedLoginPasswordForm(spec) {
+  return (
+    spec.kind === "css" &&
+    spec.selector === 'form:has(input[name="password"][type="password"])'
+  );
+}
+
+function isCombinedLoginPassword(spec) {
+  return (
+    spec.kind === "css" &&
+    spec.selector === 'input[name="password"][type="password"]'
   );
 }
 
@@ -95,6 +136,37 @@ function isLoginSubmit(spec) {
   );
 }
 
+function isCombinedLoginContinue(spec) {
+  return (
+    spec.kind === "role" &&
+    spec.role === "button" &&
+    nameMatches(spec.name, "Continue")
+  );
+}
+
+function isLoginUsePassword(spec) {
+  return (
+    spec.kind === "role" &&
+    spec.role === "button" &&
+    nameMatches(spec.name, "Use password")
+  );
+}
+
+function isCombinedLoginSubmit(spec) {
+  return (
+    spec.kind === "role" &&
+    spec.role === "button" &&
+    (nameMatches(spec.name, "Log in") || nameMatches(spec.name, "Continue"))
+  );
+}
+
+function isOneTimeCode(spec) {
+  return (
+    spec.kind === "css" &&
+    spec.selector === 'input[autocomplete="one-time-code"]'
+  );
+}
+
 function isChallenge(spec) {
   return (
     (spec.kind === "css" && spec.selector === 'iframe[src*="captcha"]') ||
@@ -117,11 +189,23 @@ class FakeLocator {
   }
 
   async fill(value) {
-    this.page.actions.push({ type: "fill", spec: this.spec, value });
+    this.page.actions.push({
+      type: "fill",
+      spec: this.spec,
+      value,
+      url: this.page.url(),
+      combinedPhase: this.page.combinedPhase,
+    });
+    this.page.afterFill(this.spec);
   }
 
   async click() {
-    this.page.actions.push({ type: "click", spec: this.spec });
+    this.page.actions.push({
+      type: "click",
+      spec: this.spec,
+      url: this.page.url(),
+      combinedPhase: this.page.combinedPhase,
+    });
     this.page.afterClick(this.spec);
   }
 
@@ -131,6 +215,19 @@ class FakeLocator {
       return this.page.forYouSelected ? "true" : "false";
     }
     return null;
+  }
+
+
+  getByRole(role, { name }) {
+    return new FakeLocator(this.page, { kind: "role", role, name });
+  }
+
+  getByText(name, { exact }) {
+    return new FakeLocator(this.page, { kind: "text", name, exact });
+  }
+
+  locator(selector) {
+    return new FakeLocator(this.page, { kind: "css", selector });
   }
 }
 
@@ -144,6 +241,18 @@ class FakePage {
     selectForYouOnClick = true,
     navigateExternallyOnNext = false,
     genericLoginControlsOnHome = false,
+    redirectHomeToRoot = false,
+    combinedLoginRoute = false,
+    rootLandingUrl = "https://x.com/",
+    homeSettlesToBareRoot = false,
+    loginSettlesToCombined = false,
+    loginStaysOnRoot = false,
+    combinedUsePasswordVisible = true,
+    combinedUsePasswordClickTransitions = true,
+    combinedUsePasswordDelayWaits = 0,
+    combinedUsePasswordNavigateOnWait = null,
+    combinedSubmitDelayWaits = 0,
+    combinedSubmitNavigateOnWait = null,
   } = {}) {
     this.state = state;
     this.currentUrl = url;
@@ -153,6 +262,31 @@ class FakePage {
     this.selectForYouOnClick = selectForYouOnClick;
     this.navigateExternallyOnNext = navigateExternallyOnNext;
     this.genericLoginControlsOnHome = genericLoginControlsOnHome;
+    this.redirectHomeToRoot = redirectHomeToRoot;
+    this.combinedLoginRoute = combinedLoginRoute;
+    this.rootLandingUrl = rootLandingUrl;
+    this.homeSettlesToBareRoot = homeSettlesToBareRoot;
+    this.loginSettlesToCombined = loginSettlesToCombined;
+    this.loginStaysOnRoot = loginStaysOnRoot;
+    this.combinedUsePasswordVisible = combinedUsePasswordVisible;
+    this.combinedUsePasswordClickTransitions =
+      combinedUsePasswordClickTransitions;
+    this.combinedUsePasswordDelayWaits = combinedUsePasswordDelayWaits;
+    this.combinedUsePasswordNavigateOnWait =
+      combinedUsePasswordNavigateOnWait;
+    this.combinedUsePasswordWaits = 0;
+    this.combinedSubmitDelayWaits = combinedSubmitDelayWaits;
+    this.combinedSubmitNavigateOnWait = combinedSubmitNavigateOnWait;
+    this.combinedSubmitWaits = 0;
+    this.pendingHomeTransition = false;
+    this.pendingLoginTransition = false;
+    this.combinedIdentifierFilled = false;
+    this.combinedPasswordFilled = false;
+    this.combinedPhase = state === X_PAGE_STATES.USE_PASSWORD_REQUIRED
+      ? "use-password"
+      : state === X_PAGE_STATES.COMBINED_LOGIN_REQUIRED
+        ? "identifier"
+        : null;
     this.actions = [];
     this.attributeReads = [];
     this.gotoCalls = [];
@@ -170,11 +304,33 @@ class FakePage {
   }
 
   async goto(url, options) {
-    this.currentUrl = this.state === X_PAGE_STATES.AUTHENTICATED
-      ? url
-      : this.state === X_PAGE_STATES.CHALLENGE
-        ? "https://x.com/i/flow/challenge"
-        : "https://x.com/i/flow/login";
+    if (this.state === X_PAGE_STATES.AUTHENTICATED) {
+      this.currentUrl = url;
+    } else if (this.state === X_PAGE_STATES.CHALLENGE) {
+      this.currentUrl = "https://x.com/i/flow/challenge";
+    } else if (url === "https://x.com/home" && this.redirectHomeToRoot) {
+      this.currentUrl = this.rootLandingUrl;
+      this.state = X_PAGE_STATES.UNKNOWN;
+      this.pendingHomeTransition = this.homeSettlesToBareRoot;
+    } else if (url === "https://x.com/i/flow/login" && this.loginStaysOnRoot) {
+      this.currentUrl = "https://x.com/";
+      this.state = X_PAGE_STATES.UNKNOWN;
+    } else if (
+      url === "https://x.com/i/flow/login" &&
+      this.combinedLoginRoute
+    ) {
+      if (this.loginSettlesToCombined) {
+        this.currentUrl = "https://x.com/";
+        this.state = X_PAGE_STATES.UNKNOWN;
+        this.pendingLoginTransition = true;
+      } else {
+        this.currentUrl = "https://x.com/i/jf/onboarding/web?mode=login";
+        this.state = X_PAGE_STATES.COMBINED_LOGIN_REQUIRED;
+        this.combinedPhase = "identifier";
+      }
+    } else {
+      this.currentUrl = "https://x.com/i/flow/login";
+    }
     this.gotoCalls.push({ url, options });
   }
 
@@ -208,6 +364,29 @@ class FakePage {
         );
       case X_PAGE_STATES.LOGIN_REQUIRED:
         return isLoginIdentifier(spec) || isLoginNext(spec);
+      case X_PAGE_STATES.COMBINED_LOGIN_REQUIRED:
+        return (
+          isCombinedLoginForm(spec) ||
+          isCombinedLoginIdentifierForm(spec) ||
+          isCombinedLoginPasswordForm(spec) ||
+          isCombinedLoginIdentifier(spec) ||
+          isCombinedLoginPassword(spec) ||
+          (this.combinedPhase === "identifier" &&
+            isCombinedLoginContinue(spec) &&
+            this.combinedIdentifierFilled) ||
+          (this.combinedPhase === "password" &&
+            isCombinedLoginSubmit(spec) &&
+            this.combinedPasswordFilled &&
+            this.combinedSubmitWaits >= this.combinedSubmitDelayWaits)
+        );
+      case X_PAGE_STATES.USE_PASSWORD_REQUIRED:
+        return (
+          (isLoginUsePassword(spec) &&
+            this.combinedUsePasswordVisible &&
+            this.combinedUsePasswordWaits >=
+              this.combinedUsePasswordDelayWaits) ||
+          isOneTimeCode(spec)
+        );
       case X_PAGE_STATES.USERNAME_REQUIRED:
         return (
           isLoginIdentifier(spec) || isLoginNext(spec) || isUsernamePrompt(spec)
@@ -221,7 +400,34 @@ class FakePage {
     }
   }
 
+  afterFill(spec) {
+    if (isCombinedLoginIdentifier(spec)) this.combinedIdentifierFilled = true;
+    if (isPassword(spec) || isCombinedLoginPassword(spec)) {
+      this.combinedPasswordFilled = true;
+    }
+  }
+
   afterClick(spec) {
+    if (
+      this.combinedPhase === "identifier" &&
+      isCombinedLoginContinue(spec)
+    ) {
+      this.state = X_PAGE_STATES.USE_PASSWORD_REQUIRED;
+      this.combinedPhase = "use-password";
+      return;
+    }
+
+    if (
+      this.combinedPhase === "use-password" &&
+      isLoginUsePassword(spec)
+    ) {
+      if (this.combinedUsePasswordClickTransitions) {
+        this.state = X_PAGE_STATES.COMBINED_LOGIN_REQUIRED;
+        this.combinedPhase = "password";
+      }
+      return;
+    }
+
     if (isLoginNext(spec)) {
       if (this.navigateExternallyOnNext) {
         this.currentUrl = "https://attacker.example/capture";
@@ -236,7 +442,10 @@ class FakePage {
       return;
     }
 
-    if (isLoginSubmit(spec)) {
+    if (
+      isLoginSubmit(spec) ||
+      (this.combinedPhase === "password" && isCombinedLoginSubmit(spec))
+    ) {
       this.state = this.submitState;
       if (this.state === X_PAGE_STATES.AUTHENTICATED) {
         this.currentUrl = "https://x.com/home";
@@ -257,6 +466,42 @@ class FakePage {
 
   async waitForTimeout(milliseconds) {
     this.waitCalls.push(milliseconds);
+    if (
+      this.state === X_PAGE_STATES.COMBINED_LOGIN_REQUIRED &&
+      this.combinedPhase === "password" &&
+      this.combinedIdentifierFilled &&
+      this.combinedPasswordFilled
+    ) {
+      this.combinedSubmitWaits += 1;
+      if (
+        this.combinedSubmitWaits === 1 &&
+        this.combinedSubmitNavigateOnWait
+      ) {
+        this.currentUrl = this.combinedSubmitNavigateOnWait;
+      }
+    }
+    if (
+      this.state === X_PAGE_STATES.USE_PASSWORD_REQUIRED &&
+      this.combinedPhase === "use-password"
+    ) {
+      this.combinedUsePasswordWaits += 1;
+      if (
+        this.combinedUsePasswordWaits === 1 &&
+        this.combinedUsePasswordNavigateOnWait
+      ) {
+        this.currentUrl = this.combinedUsePasswordNavigateOnWait;
+      }
+    }
+    if (this.pendingHomeTransition) {
+      this.pendingHomeTransition = false;
+      this.currentUrl = "https://x.com/";
+      this.state = X_PAGE_STATES.UNKNOWN;
+    } else if (this.pendingLoginTransition) {
+      this.pendingLoginTransition = false;
+      this.currentUrl = "https://x.com/i/jf/onboarding/web?mode=login";
+      this.state = X_PAGE_STATES.COMBINED_LOGIN_REQUIRED;
+      this.combinedPhase = "identifier";
+    }
   }
 
   async route(_pattern, handler) {
@@ -315,12 +560,23 @@ class FakePage {
 function actionKinds(page) {
   return page.actions.map((action) => {
     if (action.type === "fill") {
-      if (isPassword(action.spec)) return "fill-password";
+      if (isPassword(action.spec) || isCombinedLoginPassword(action.spec)) {
+        return "fill-password";
+      }
       return "fill-identifier";
     }
     if (action.type === "click") {
+      if (isLoginUsePassword(action.spec)) return "click-use-password";
+      if (
+        action.combinedPhase === "identifier" &&
+        isCombinedLoginContinue(action.spec)
+      ) {
+        return "click-next";
+      }
       if (isLoginNext(action.spec)) return "click-next";
-      if (isLoginSubmit(action.spec)) return "click-login";
+      if (isLoginSubmit(action.spec) || isCombinedLoginSubmit(action.spec)) {
+        return "click-login";
+      }
       if (isForYou(action.spec)) return "click-for-you";
     }
     return action.type;
@@ -357,6 +613,39 @@ test("X navigation accepts only exact approved HTTPS hostnames", () => {
     "https://x.com/home",
   );
   assert.equal(sanitizePageUrl("https://attacker.example/collect"), "[blocked]");
+  assert.equal(
+    isAllowedXLoginRedirectUrl("https://x.com/i/flow/new-login-step?state=opaque"),
+    true,
+  );
+  assert.equal(
+    isAllowedXLoginRedirectUrl("https://www.x.com/i/flow/new-login-step"),
+    false,
+  );
+});
+
+test("same-origin redirects are allowed only until login completes", async () => {
+  const page = new FakePage({
+    state: X_PAGE_STATES.UNKNOWN,
+    url: "about:blank",
+  });
+  const guard = await installNavigationGuard(page, {
+    allowSameOriginLoginRedirects: true,
+  });
+
+  const redirect = await page.dispatchRequest(
+    "https://x.com/i/flow/new-login-step?state=opaque",
+  );
+  assert.deepEqual(redirect, { aborted: null, continued: true });
+
+  page.currentUrl = "https://x.com/home";
+  page.state = X_PAGE_STATES.AUTHENTICATED;
+  assert.equal(guard.completeLogin(), true);
+
+  const afterLogin = await page.dispatchRequest("https://x.com/messages");
+  assert.deepEqual(afterLogin, {
+    aborted: "blockedbyclient",
+    continued: false,
+  });
 });
 
 test("navigation guard aborts external top-level navigation and fails closed", async () => {
@@ -425,12 +714,77 @@ test("navigation guard permits only the initial blank page before Home", async (
   const guard = await installNavigationGuard(page);
   assert.equal(guard.assertSafe(), true);
 
+  const rootRequest = await page.dispatchRequest("https://x.com/");
+  assert.deepEqual(rootRequest, { aborted: null, continued: true });
+  page.currentUrl = "https://x.com/";
+  assert.equal(guard.assertSafe(), true);
+
   const homeRequest = await page.dispatchRequest("https://x.com/home");
   assert.deepEqual(homeRequest, { aborted: null, continued: true });
   page.currentUrl = "https://x.com/home";
   assert.equal(guard.assertSafe(), true);
 
   page.currentUrl = "about:blank";
+  assert.throws(
+    () => guard.assertSafe(),
+    (error) => error?.code === "NAVIGATION_BLOCKED",
+  );
+});
+
+test("workflow navigation allows only the exact X root landing path", () => {
+  assert.equal(isAllowedXWorkflowUrl("https://x.com/"), true);
+  assert.equal(isAllowedXWorkflowUrl("https://x.com"), true);
+
+  for (const url of [
+    "https://x.com//",
+    "https://x.com/messages",
+    "https://x.com.attacker.example/",
+  ]) {
+    assert.equal(isAllowedXWorkflowUrl(url), false, url);
+  }
+});
+
+test("combined login navigation allows only X's exact observed transitions", async () => {
+  const exact = "https://x.com/i/jf/onboarding/web?mode=login";
+  const postLogin = "https://x.com/i/jf/onboarding/web";
+  assert.equal(isAllowedXCombinedLoginUrl(exact), true);
+  assert.equal(isAllowedXLoginUrl(exact), true);
+  assert.equal(isAllowedXWorkflowUrl(exact), true);
+  assert.equal(isAllowedXCombinedLoginUrl(postLogin), false);
+  assert.equal(isAllowedXLoginUrl(postLogin), false);
+  assert.equal(isAllowedXWorkflowUrl(postLogin), true);
+
+  for (const url of [
+    "https://www.x.com/i/jf/onboarding/web?mode=login",
+    "https://x.com/i/jf/onboarding/web/?mode=login",
+    "https://x.com/i/jf/onboarding/web?mode=signup",
+    "https://x.com/i/jf/onboarding/web?mode=login&mode=login",
+    "https://x.com/i/jf/onboarding/web?mode=login&extra=1",
+    "https://x.com/i/jf/onboarding/web?mode=login#step",
+    "https://x.com:444/i/jf/onboarding/web?mode=login",
+    "https://attacker.example/i/jf/onboarding/web?mode=login",
+  ]) {
+    assert.equal(isAllowedXCombinedLoginUrl(url), false, url);
+    assert.equal(isAllowedXLoginUrl(url), false, url);
+    assert.equal(isAllowedXWorkflowUrl(url), false, url);
+  }
+
+  const page = new FakePage({ state: X_PAGE_STATES.UNKNOWN });
+  const guard = await installNavigationGuard(page);
+  assert.deepEqual(await page.dispatchRequest(exact), {
+    aborted: null,
+    continued: true,
+  });
+  assert.deepEqual(await page.dispatchRequest(postLogin), {
+    aborted: null,
+    continued: true,
+  });
+  assert.deepEqual(
+    await page.dispatchRequest(
+      "https://x.com/i/jf/onboarding/web?mode=signup",
+    ),
+    { aborted: "blockedbyclient", continued: false },
+  );
   assert.throws(
     () => guard.assertSafe(),
     (error) => error?.code === "NAVIGATION_BLOCKED",
@@ -481,10 +835,62 @@ test("approved actions reject external pages before acting and after navigation"
   assert.deepEqual(actionKinds(redirectingPage), ["click-next"]);
 });
 
+test("credential fills recheck permission and exact route immediately before mutation", async () => {
+  for (const fixture of [
+    {
+      action: X_READ_ONLY_ACTIONS.FILL_LOGIN_IDENTIFIER,
+      value: "must-not-be-filled@example.test",
+      target: isCombinedLoginIdentifier,
+    },
+    {
+      action: X_READ_ONLY_ACTIONS.FILL_LOGIN_PASSWORD,
+      value: "must-not-be-filled",
+      target: isCombinedLoginPassword,
+    },
+  ]) {
+    const revoked = new FakePage({
+      state: X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
+      url: "https://x.com/i/jf/onboarding/web?mode=login",
+    });
+    let permissionChecks = 0;
+    await assert.rejects(
+      performReadOnlyAction(revoked, fixture.action, fixture.value, {
+        assertPermissionActive() {
+          permissionChecks += 1;
+          if (permissionChecks === 2) {
+            const error = new Error("permission revoked");
+            error.code = "FEATURE_DISABLED";
+            throw error;
+          }
+        },
+      }),
+      (error) => error?.code === "FEATURE_DISABLED",
+    );
+    assert.deepEqual(revoked.actions, []);
+
+    const drifted = new FakePage({
+      state: X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
+      url: "https://x.com/i/jf/onboarding/web?mode=login",
+    });
+    const originalIsVisible = drifted.isVisible.bind(drifted);
+    drifted.isVisible = (spec) => {
+      const visible = originalIsVisible(spec);
+      if (fixture.target(spec)) drifted.currentUrl = "https://x.com/";
+      return visible;
+    };
+    await assert.rejects(
+      performReadOnlyAction(drifted, fixture.action, fixture.value),
+      (error) => error?.code === "NAVIGATION_BLOCKED",
+    );
+    assert.deepEqual(drifted.actions, []);
+  }
+});
+
 test("read-only action surface has no unsupported timeline mutations", async () => {
   assert.deepEqual(Object.values(X_READ_ONLY_ACTIONS), [
     "fill-login-identifier",
     "click-login-next",
+    "click-login-use-password",
     "fill-login-username",
     "fill-login-password",
     "click-login-submit",
@@ -544,16 +950,62 @@ test("locator fallback survives one detached locator and rejects unknown specs",
   );
 });
 
+test("combined login method controls use exact accessible button names", () => {
+  const [continueSpec] = X_LOCATORS.combinedLoginContinue;
+  const [usePasswordSpec] = X_LOCATORS.loginUsePassword;
+  const [submitSpec] = X_LOCATORS.combinedLoginSubmit;
+
+  for (const spec of [continueSpec, usePasswordSpec, submitSpec]) {
+    assert.equal(spec.kind, "role");
+    assert.equal(spec.role, "button");
+  }
+
+  assert.equal(nameMatches(continueSpec.name, "Continue"), true);
+  assert.equal(nameMatches(continueSpec.name, "Continue with phone"), false);
+  assert.equal(nameMatches(usePasswordSpec.name, "Use password"), true);
+  assert.equal(
+    nameMatches(usePasswordSpec.name, "Use a password manager"),
+    false,
+  );
+  assert.equal(nameMatches(submitSpec.name, "Continue"), true);
+  assert.equal(
+    nameMatches(submitSpec.name, "Continue with phone"),
+    false,
+  );
+});
+
 test("page-state detection distinguishes authentication, login, and challenge", async () => {
   for (const state of [
     X_PAGE_STATES.AUTHENTICATED,
+    X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
+    X_PAGE_STATES.USE_PASSWORD_REQUIRED,
     X_PAGE_STATES.LOGIN_REQUIRED,
+    X_PAGE_STATES.ROOT_LANDING,
     X_PAGE_STATES.USERNAME_REQUIRED,
     X_PAGE_STATES.PASSWORD_REQUIRED,
     X_PAGE_STATES.CHALLENGE,
     X_PAGE_STATES.UNKNOWN,
   ]) {
-    const page = new FakePage({ state });
+    const url = [
+      X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
+      X_PAGE_STATES.USE_PASSWORD_REQUIRED,
+    ].includes(state)
+      ? "https://x.com/i/jf/onboarding/web?mode=login"
+      : state === X_PAGE_STATES.ROOT_LANDING
+        ? "https://x.com/"
+      : [
+          X_PAGE_STATES.LOGIN_REQUIRED,
+          X_PAGE_STATES.USERNAME_REQUIRED,
+          X_PAGE_STATES.PASSWORD_REQUIRED,
+        ].includes(state)
+        ? "https://x.com/i/flow/login"
+        : state === X_PAGE_STATES.CHALLENGE
+          ? "https://x.com/i/flow/challenge"
+          : "https://x.com/home";
+    const page = new FakePage({
+      state,
+      url,
+    });
     assert.equal(await detectXPageState(page), state);
   }
 
@@ -562,6 +1014,66 @@ test("page-state detection distinguishes authentication, login, and challenge", 
     url: "https://x.com/i/flow/challenge/step",
   });
   assert.equal(await detectXPageState(challengeUrl), X_PAGE_STATES.CHALLENGE);
+
+  const passwordlessPrompt = new FakePage({
+    state: X_PAGE_STATES.USE_PASSWORD_REQUIRED,
+    url: "https://x.com/i/jf/onboarding/web?mode=login",
+  });
+  assert.equal(
+    await detectXPageState(passwordlessPrompt),
+    X_PAGE_STATES.USE_PASSWORD_REQUIRED,
+  );
+  const originalIsVisible = passwordlessPrompt.isVisible.bind(passwordlessPrompt);
+  passwordlessPrompt.isVisible = (spec) =>
+    isOneTimeCode(spec) ? false : originalIsVisible(spec);
+  assert.equal(
+    await detectXPageState(passwordlessPrompt),
+    X_PAGE_STATES.USE_PASSWORD_REQUIRED,
+  );
+  passwordlessPrompt.isVisible = originalIsVisible;
+  passwordlessPrompt.combinedUsePasswordVisible = false;
+  assert.equal(
+    await detectXPageState(passwordlessPrompt),
+    X_PAGE_STATES.CHALLENGE,
+  );
+});
+
+test("login controls are classified only on an approved login route", async () => {
+  const rootPassword = new FakePage({
+    state: X_PAGE_STATES.PASSWORD_REQUIRED,
+    url: "https://x.com/",
+  });
+  assert.equal(
+    await detectXPageState(rootPassword),
+    X_PAGE_STATES.ROOT_LANDING,
+  );
+  await assert.rejects(
+    performReadOnlyAction(
+      rootPassword,
+      X_READ_ONLY_ACTIONS.FILL_LOGIN_PASSWORD,
+      "must-not-be-filled",
+    ),
+    (error) => error?.code === "NAVIGATION_BLOCKED",
+  );
+  assert.deepEqual(rootPassword.actions, []);
+
+  const homePassword = new FakePage({
+    state: X_PAGE_STATES.PASSWORD_REQUIRED,
+    url: "https://x.com/home",
+  });
+  assert.equal(await detectXPageState(homePassword), X_PAGE_STATES.UNKNOWN);
+
+  const loginAuthenticated = new FakePage({
+    state: X_PAGE_STATES.AUTHENTICATED,
+    url: "https://x.com/i/flow/login",
+  });
+  assert.equal(await detectXPageState(loginAuthenticated), X_PAGE_STATES.UNKNOWN);
+
+  const signupCombined = new FakePage({
+    state: X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
+    url: "https://x.com/i/jf/onboarding/web?mode=signup",
+  });
+  assert.equal(await detectXPageState(signupCombined), X_PAGE_STATES.UNKNOWN);
 });
 
 test("authenticated session is reused without reading or filling credentials", async () => {
@@ -602,6 +1114,424 @@ test("generic Home text inputs are never treated as login controls", async () =>
 
   assert.equal(method, "existing-session");
   assert.deepEqual(page.actions, []);
+});
+
+test("root landing selects the exact password method before one login submit", async () => {
+  const email = "collector@example.test";
+  const password = "synthetic-password-never-log";
+  const page = new FakePage({
+    state: X_PAGE_STATES.UNKNOWN,
+    redirectHomeToRoot: true,
+    combinedLoginRoute: true,
+    combinedSubmitDelayWaits: 2,
+    submitState: X_PAGE_STATES.AUTHENTICATED,
+  });
+
+  const method = await ensureXAuthenticated(page, {
+    env: {
+      X_LOGIN_EMAIL: email,
+      X_LOGIN_PASSWORD: password,
+    },
+    stateTimeoutMs: 1,
+  });
+
+  assert.equal(method, "credentials");
+  assert.deepEqual(page.gotoCalls, [
+    {
+      url: "https://x.com/home",
+      options: { waitUntil: "domcontentloaded" },
+    },
+    {
+      url: "https://x.com/i/flow/login",
+      options: { waitUntil: "domcontentloaded" },
+    },
+  ]);
+  assert.deepEqual(actionKinds(page), [
+    "fill-identifier",
+    "click-next",
+    "click-use-password",
+    "fill-password",
+    "click-login",
+  ]);
+  assert.deepEqual(
+    page.actions.filter((action) => action.type === "fill").map(({ value }) => value),
+    [email, password],
+  );
+  assert.deepEqual(page.waitCalls, [200, 200]);
+});
+
+test("a missing Use password control fails closed without entering a password", async () => {
+  const page = new FakePage({
+    state: X_PAGE_STATES.USE_PASSWORD_REQUIRED,
+    url: "https://x.com/i/jf/onboarding/web?mode=login",
+    combinedUsePasswordVisible: false,
+  });
+
+  await assert.rejects(
+    performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.CLICK_LOGIN_USE_PASSWORD,
+    ),
+    (error) =>
+      error?.code === "SELECTOR_DRIFT" &&
+      error?.locator === X_READ_ONLY_ACTIONS.CLICK_LOGIN_USE_PASSWORD,
+  );
+  assert.equal(
+    actionKinds(page).filter((action) => action === "click-use-password").length,
+    0,
+  );
+  assert.equal(
+    actionKinds(page).filter((action) => action === "fill-password").length,
+    0,
+  );
+  assert.equal(
+    page.actions.some(({ spec }) => isOneTimeCode(spec)),
+    false,
+  );
+});
+
+test("permission revocation while Use password materializes never clicks", async () => {
+  const page = new FakePage({
+    state: X_PAGE_STATES.USE_PASSWORD_REQUIRED,
+    url: "https://x.com/i/jf/onboarding/web?mode=login",
+    combinedUsePasswordDelayWaits: 10,
+  });
+
+  await assert.rejects(
+    performReadOnlyAction(
+      page,
+      X_READ_ONLY_ACTIONS.CLICK_LOGIN_USE_PASSWORD,
+      undefined,
+      {
+        assertPermissionActive() {
+          if (page.combinedUsePasswordWaits === 1) {
+            const error = new Error("permission revoked");
+            error.code = "FEATURE_DISABLED";
+            throw error;
+          }
+        },
+      },
+    ),
+    (error) => error?.code === "FEATURE_DISABLED",
+  );
+  assert.equal(
+    actionKinds(page).filter((action) => action === "click-use-password").length,
+    0,
+  );
+  assert.equal(
+    actionKinds(page).filter((action) => action === "fill-password").length,
+    0,
+  );
+  assert.deepEqual(page.waitCalls, [200]);
+});
+
+test("Use password route drift during materialization never clicks", async () => {
+  for (const combinedUsePasswordNavigateOnWait of [
+    "https://x.com/",
+    "https://x.com/i/flow/login",
+  ]) {
+    const page = new FakePage({
+      state: X_PAGE_STATES.USE_PASSWORD_REQUIRED,
+      url: "https://x.com/i/jf/onboarding/web?mode=login",
+      combinedUsePasswordDelayWaits: 10,
+      combinedUsePasswordNavigateOnWait,
+    });
+
+    await assert.rejects(
+      performReadOnlyAction(
+        page,
+        X_READ_ONLY_ACTIONS.CLICK_LOGIN_USE_PASSWORD,
+      ),
+      (error) => error?.code === "NAVIGATION_BLOCKED",
+      combinedUsePasswordNavigateOnWait,
+    );
+    assert.equal(
+      actionKinds(page).filter(
+        (action) => action === "click-use-password",
+      ).length,
+      0,
+      combinedUsePasswordNavigateOnWait,
+    );
+    assert.equal(
+      actionKinds(page).filter((action) => action === "fill-password").length,
+      0,
+      combinedUsePasswordNavigateOnWait,
+    );
+    assert.deepEqual(
+      page.waitCalls,
+      [200],
+      combinedUsePasswordNavigateOnWait,
+    );
+  }
+});
+
+test("a Use password click that does not change methods never enters a password", async () => {
+  const page = new FakePage({
+    state: X_PAGE_STATES.UNKNOWN,
+    redirectHomeToRoot: true,
+    combinedLoginRoute: true,
+    combinedUsePasswordClickTransitions: false,
+  });
+
+  await assert.rejects(
+    ensureXAuthenticated(page, {
+      env: {
+        X_LOGIN_EMAIL: "collector@example.test",
+        X_LOGIN_PASSWORD: "must-not-be-entered",
+      },
+      stateTimeoutMs: 1,
+    }),
+    (error) => error?.code === "AUTH_FAILED",
+  );
+  assert.deepEqual(actionKinds(page), [
+    "fill-identifier",
+    "click-next",
+    "click-use-password",
+  ]);
+  assert.equal(page.combinedPasswordFilled, false);
+});
+
+test("permission revocation while the exact combined submit materializes never clicks", async () => {
+  const page = new FakePage({
+    state: X_PAGE_STATES.UNKNOWN,
+    redirectHomeToRoot: true,
+    combinedLoginRoute: true,
+    combinedSubmitDelayWaits: 10,
+  });
+
+  await assert.rejects(
+    ensureXAuthenticated(page, {
+      env: {
+        X_LOGIN_EMAIL: "collector@example.test",
+        X_LOGIN_PASSWORD: "synthetic-password",
+      },
+      stateTimeoutMs: 20,
+      assertPermissionActive() {
+        if (
+          page.combinedPasswordFilled &&
+          page.combinedSubmitWaits === 1
+        ) {
+          const error = new Error("permission revoked");
+          error.code = "FEATURE_DISABLED";
+          throw error;
+        }
+      },
+    }),
+    (error) => error?.code === "FEATURE_DISABLED",
+  );
+  assert.equal(
+    actionKinds(page).filter((action) => action === "click-login").length,
+    0,
+  );
+  assert.deepEqual(page.waitCalls, [200]);
+});
+
+test("combined submit route drift during materialization never clicks", async () => {
+  for (const combinedSubmitNavigateOnWait of [
+    "https://x.com/",
+    "https://x.com/i/flow/login",
+  ]) {
+    const page = new FakePage({
+      state: X_PAGE_STATES.UNKNOWN,
+      redirectHomeToRoot: true,
+      combinedLoginRoute: true,
+      combinedSubmitDelayWaits: 10,
+      combinedSubmitNavigateOnWait,
+    });
+
+    await assert.rejects(
+      ensureXAuthenticated(page, {
+        env: {
+          X_LOGIN_EMAIL: "collector@example.test",
+          X_LOGIN_PASSWORD: "synthetic-password",
+        },
+        stateTimeoutMs: 20,
+      }),
+      (error) => error?.code === "NAVIGATION_BLOCKED",
+      combinedSubmitNavigateOnWait,
+    );
+    assert.equal(
+      actionKinds(page).filter((action) => action === "click-login").length,
+      0,
+      combinedSubmitNavigateOnWait,
+    );
+    assert.deepEqual(page.waitCalls, [200], combinedSubmitNavigateOnWait);
+  }
+});
+
+test("non-exact root landings never enter credentials", async () => {
+  for (const rootLandingUrl of [
+    "https://x.com/?mode=login",
+    "https://x.com/#login",
+    "https://www.x.com/",
+  ]) {
+    const page = new FakePage({
+      state: X_PAGE_STATES.UNKNOWN,
+      redirectHomeToRoot: true,
+      combinedLoginRoute: true,
+      rootLandingUrl,
+    });
+
+    await assert.rejects(
+      ensureXAuthenticated(page, {
+        env: {
+          X_LOGIN_EMAIL: "must-not-be-entered@example.test",
+          X_LOGIN_PASSWORD: "must-not-be-entered",
+        },
+        stateTimeoutMs: 1,
+      }),
+      (error) => error?.code === "AUTH_FAILED",
+    );
+    assert.equal(page.gotoCalls.length, 1, rootLandingUrl);
+    assert.deepEqual(page.actions, [], rootLandingUrl);
+  }
+});
+
+test("transient root shells settle before the exact combined login acts", async () => {
+  const email = "collector@example.test";
+  const password = "synthetic-password-never-log";
+  const page = new FakePage({
+    state: X_PAGE_STATES.UNKNOWN,
+    redirectHomeToRoot: true,
+    rootLandingUrl: "https://x.com/?transient=1",
+    homeSettlesToBareRoot: true,
+    combinedLoginRoute: true,
+    loginSettlesToCombined: true,
+    submitState: X_PAGE_STATES.AUTHENTICATED,
+  });
+
+  const method = await ensureXAuthenticated(page, {
+    env: {
+      X_LOGIN_EMAIL: email,
+      X_LOGIN_PASSWORD: password,
+    },
+    stateTimeoutMs: 1_000,
+  });
+
+  assert.equal(method, "credentials");
+  assert.deepEqual(actionKinds(page), [
+    "fill-identifier",
+    "click-next",
+    "click-use-password",
+    "fill-password",
+    "click-login",
+  ]);
+  assert.deepEqual(
+    page.actions.filter((action) => action.type === "fill").map(({ value }) => value),
+    [email, password],
+  );
+  assert.ok(page.waitCalls.length >= 2);
+  assert.ok(
+    page.actions.every(
+      (action) => action.url === "https://x.com/i/jf/onboarding/web?mode=login",
+    ),
+  );
+});
+
+test("a login root shell that never reaches an approved form performs no actions", async () => {
+  const page = new FakePage({
+    state: X_PAGE_STATES.UNKNOWN,
+    redirectHomeToRoot: true,
+    loginStaysOnRoot: true,
+  });
+
+  await assert.rejects(
+    ensureXAuthenticated(page, {
+      env: {
+        X_LOGIN_EMAIL: "must-not-be-entered@example.test",
+        X_LOGIN_PASSWORD: "must-not-be-entered",
+      },
+      stateTimeoutMs: 1,
+    }),
+    (error) => error?.code === "AUTH_FAILED",
+  );
+  assert.equal(page.gotoCalls.length, 2);
+  assert.deepEqual(page.actions, []);
+});
+
+test("permission revocation during a root-shell transition performs no actions", async () => {
+  const page = new FakePage({
+    state: X_PAGE_STATES.UNKNOWN,
+    redirectHomeToRoot: true,
+    combinedLoginRoute: true,
+    loginSettlesToCombined: true,
+  });
+  let permissionChecks = 0;
+
+  await assert.rejects(
+    ensureXAuthenticated(page, {
+      env: {
+        X_LOGIN_EMAIL: "must-not-be-entered@example.test",
+        X_LOGIN_PASSWORD: "must-not-be-entered",
+      },
+      stateTimeoutMs: 20,
+      assertPermissionActive() {
+        permissionChecks += 1;
+        if (permissionChecks === 5) {
+          const error = new Error("permission revoked");
+          error.code = "FEATURE_DISABLED";
+          throw error;
+        }
+      },
+    }),
+    (error) => error?.code === "FEATURE_DISABLED",
+  );
+  assert.equal(permissionChecks, 5);
+  assert.deepEqual(page.actions, []);
+});
+
+test("combined login submits at most once and fails closed", async () => {
+  const password = "single-synthetic-attempt";
+
+  for (const fixture of [
+    {
+      name: "rejected credentials",
+      submitState: X_PAGE_STATES.COMBINED_LOGIN_REQUIRED,
+      expectedCode: "AUTH_FAILED",
+      finalEvent: "AUTH_FAILED",
+    },
+    {
+      name: "challenge",
+      submitState: X_PAGE_STATES.CHALLENGE,
+      expectedCode: "MANUAL_ACTION_REQUIRED",
+      finalEvent: "MANUAL_ACTION_REQUIRED",
+    },
+  ]) {
+    const page = new FakePage({
+      state: X_PAGE_STATES.UNKNOWN,
+      redirectHomeToRoot: true,
+      combinedLoginRoute: true,
+      submitState: fixture.submitState,
+    });
+    const events = [];
+
+    await assert.rejects(
+      ensureXAuthenticated(page, {
+        env: {
+          X_LOGIN_EMAIL: "collector@example.test",
+          X_LOGIN_PASSWORD: password,
+        },
+        interactiveChallenges: false,
+        stateTimeoutMs: 1,
+        log: (event, metadata) => events.push({ event, metadata }),
+      }),
+      (error) => error?.code === fixture.expectedCode,
+      fixture.name,
+    );
+
+    assert.equal(
+      actionKinds(page).filter((action) => action === "fill-password").length,
+      1,
+      fixture.name,
+    );
+    assert.equal(
+      actionKinds(page).filter((action) => action === "click-login").length,
+      1,
+      fixture.name,
+    );
+    assert.equal(events.at(-1)?.event, fixture.finalEvent, fixture.name);
+    assert.equal(JSON.stringify(events).includes(password), false, fixture.name);
+  }
 });
 
 test("lowercase email/password aliases complete login without entering log metadata", async () => {

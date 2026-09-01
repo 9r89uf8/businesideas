@@ -75,6 +75,7 @@ export async function runAuthorizedCollector({
     assertNoUnexpectedPages = launched.assertNoUnexpectedPages;
     const navigationGuard = await installNavigationGuard(page, {
       browserContext,
+      allowSameOriginLoginRedirects: true,
     });
     const assertPermissionActive = () => {
       assertVerifiedCapability(capability, { now: dateFromClock(clock) });
@@ -90,6 +91,7 @@ export async function runAuthorizedCollector({
       assertPermissionActive,
       log,
     });
+    navigationGuard.completeLogin();
     assertPermissionActive();
     await requireAuthenticatedAccount(page, authorized.configuredAccount);
     assertPermissionActive();
