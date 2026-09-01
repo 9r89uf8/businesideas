@@ -18,6 +18,7 @@ import {
 import {
   installNavigationGuard,
   isAllowedXCombinedLoginUrl,
+  isAllowedXLoginRedirectUrl,
   isAllowedXLoginUrl,
   isAllowedXWorkflowUrl,
   isAllowedXUrl,
@@ -612,6 +613,39 @@ test("X navigation accepts only exact approved HTTPS hostnames", () => {
     "https://x.com/home",
   );
   assert.equal(sanitizePageUrl("https://attacker.example/collect"), "[blocked]");
+  assert.equal(
+    isAllowedXLoginRedirectUrl("https://x.com/i/flow/new-login-step?state=opaque"),
+    true,
+  );
+  assert.equal(
+    isAllowedXLoginRedirectUrl("https://www.x.com/i/flow/new-login-step"),
+    false,
+  );
+});
+
+test("same-origin redirects are allowed only until login completes", async () => {
+  const page = new FakePage({
+    state: X_PAGE_STATES.UNKNOWN,
+    url: "about:blank",
+  });
+  const guard = await installNavigationGuard(page, {
+    allowSameOriginLoginRedirects: true,
+  });
+
+  const redirect = await page.dispatchRequest(
+    "https://x.com/i/flow/new-login-step?state=opaque",
+  );
+  assert.deepEqual(redirect, { aborted: null, continued: true });
+
+  page.currentUrl = "https://x.com/home";
+  page.state = X_PAGE_STATES.AUTHENTICATED;
+  assert.equal(guard.completeLogin(), true);
+
+  const afterLogin = await page.dispatchRequest("https://x.com/messages");
+  assert.deepEqual(afterLogin, {
+    aborted: "blockedbyclient",
+    continued: false,
+  });
 });
 
 test("navigation guard aborts external top-level navigation and fails closed", async () => {

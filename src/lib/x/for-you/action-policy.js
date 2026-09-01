@@ -1,6 +1,7 @@
 import { findVisibleLocator, X_LOCATORS } from "./locators.js";
 import {
   isAllowedXCombinedLoginUrl,
+  requireAllowedXLoginRedirectPage,
   requireAllowedXWorkflowPage,
   requireXCombinedLoginPage,
   requireXHomePage,
@@ -220,7 +221,7 @@ export async function performReadOnlyAction(
   }
 
   if (action === X_READ_ONLY_ACTIONS.CLICK_LOGIN_SUBMIT) {
-    requireAllowedXWorkflowPage(page);
+    requireAllowedXLoginRedirectPage(page);
   } else if (
     combinedLoginAction &&
     (

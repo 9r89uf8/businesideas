@@ -48,6 +48,11 @@ export function isAllowedXUrl(value, { allowBlank = false } = {}) {
   }
 }
 
+export function isAllowedXLoginRedirectUrl(value) {
+  if (!isAllowedXUrl(value)) return false;
+  return new URL(value).origin === "https://x.com";
+}
+
 export function isExactXRootLanding(value) {
   if (!isAllowedXUrl(value)) return false;
   const url = new URL(value);
@@ -115,6 +120,16 @@ export function requireAllowedXWorkflowPage(page) {
   return currentUrl;
 }
 
+export function requireAllowedXLoginRedirectPage(page) {
+  const currentUrl = page.url();
+  if (!isAllowedXLoginRedirectUrl(currentUrl)) {
+    const error = new Error("The collector left the approved X login origin.");
+    error.code = "NAVIGATION_BLOCKED";
+    throw error;
+  }
+  return currentUrl;
+}
+
 export function requireXLoginPage(page) {
   const currentUrl = page.url();
   if (!isAllowedXLoginUrl(currentUrl)) {
@@ -156,13 +171,21 @@ export function sanitizePageUrl(value) {
 
 export async function installNavigationGuard(
   page,
-  { browserContext = page.context?.() } = {},
+  {
+    browserContext = page.context?.(),
+    allowSameOriginLoginRedirects = false,
+  } = {},
 ) {
   if (!browserContext || typeof browserContext.route !== "function") {
     throw new TypeError("An X browser context is required for navigation safety.");
   }
   let blockedNavigation = null;
-  let enteredWorkflow = isAllowedXWorkflowUrl(page.url());
+  let loginRedirectsActive = allowSameOriginLoginRedirects === true;
+  const isAllowedNavigation = (value) =>
+    loginRedirectsActive
+      ? isAllowedXLoginRedirectUrl(value)
+      : isAllowedXWorkflowUrl(value);
+  let enteredWorkflow = isAllowedNavigation(page.url());
 
   await browserContext.route("**/*", async (route) => {
     const request = route.request();
@@ -190,7 +213,7 @@ export async function installNavigationGuard(
 
     if (
       isMainFrameNavigation &&
-      (isUnexpectedPage || !isAllowedXWorkflowUrl(request.url()))
+      (isUnexpectedPage || !isAllowedNavigation(request.url()))
     ) {
       blockedNavigation = sanitizePageUrl(request.url());
       await route.abort("blockedbyclient");
@@ -218,7 +241,18 @@ export async function installNavigationGuard(
       }
 
       if (!enteredWorkflow && page.url() === "about:blank") return true;
-      requireAllowedXWorkflowPage(page);
+      if (loginRedirectsActive) requireAllowedXLoginRedirectPage(page);
+      else requireAllowedXWorkflowPage(page);
+      return true;
+    },
+    completeLogin() {
+      if (blockedNavigation !== null) {
+        const error = new Error("An external top-level navigation was blocked.");
+        error.code = "NAVIGATION_BLOCKED";
+        throw error;
+      }
+      requireXHomePage(page);
+      loginRedirectsActive = false;
       return true;
     },
   });
