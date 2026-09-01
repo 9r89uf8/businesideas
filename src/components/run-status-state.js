@@ -2,9 +2,9 @@ export const RUN_STAGE_LABELS = {
   fetching: "Fetching and ranking X posts",
   extracting: "Extracting commercial signals",
   clustering: "Building opportunity clusters",
-  generating: "Preparing the scheduled research handoff",
-  research_queued: "Waiting for the scheduled Codex researcher",
-  researching: "Codex is researching the strongest clusters",
+  generating: "Preparing the final research job",
+  research_queued: "Waiting for API research",
+  researching: "Researching the strongest clusters with live web sources",
   validating: "Validating research and candidate evidence",
   saving: "Deduplicating and saving ideas",
 };

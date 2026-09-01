@@ -31,11 +31,13 @@ import {
   validateTerraResponse,
 } from "../lib/validation.js";
 import { XApiError } from "../lib/x/client.js";
+import { buildXForYouConnectionCounts } from "../lib/x/for-you-connection.js";
 import {
   purgeExpiredRawContent,
   refreshRetainedEvidence,
   upsertCurrentPosts,
 } from "../lib/x/retention.js";
+import { hydrateAndMergeForYouPosts } from "../lib/x/for-you-hydration.js";
 import { searchHybridRecentPosts } from "../lib/x/search-posts.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -119,7 +121,11 @@ function retryXRateLimit(error) {
   throw error;
 }
 
-export async function fetchAndRank({ runId, ownerId }) {
+export async function fetchAndRank({
+  runId,
+  ownerId,
+  forYouCandidates = [],
+}) {
   "use step";
 
   requireWorkflowArgs({ runId, ownerId });
@@ -163,7 +169,7 @@ export async function fetchAndRank({ runId, ownerId }) {
     await purgeExpiredRawContent(db, ownerId, now);
     await refreshRetainedEvidence(db, ownerId, now);
     const metricsCapturedAt = new Date().toISOString();
-    searchResult = await searchHybridRecentPosts({
+    const apiSearchResult = await searchHybridRecentPosts({
       query: run.settings_snapshot.x_query,
       followedUsernames: run.settings_snapshot.followed_x_usernames,
       startTime: run.window_start,
@@ -172,8 +178,23 @@ export async function fetchAndRank({ runId, ownerId }) {
       candidateLimit: run.settings_snapshot.candidate_limit,
       aiInputLimit: run.settings_snapshot.ai_input_limit,
     });
+    searchResult = apiSearchResult;
   } catch (error) {
     retryXRateLimit(error);
+  }
+
+  if (forYouCandidates.length) {
+    try {
+      searchResult = await hydrateAndMergeForYouPosts({
+        searchResult,
+        candidates: forYouCandidates,
+        windowStart: run.window_start,
+        windowEnd: run.window_end,
+      });
+    } catch {
+      // This is an optional discovery lane. Lookup, rate-limit, or validation
+      // failures must never discard the official followed/topic API result.
+    }
   }
 
   const posts = searchResult.posts;
@@ -210,7 +231,11 @@ export async function fetchAndRank({ runId, ownerId }) {
 
   const ranked = rankPosts(searchResult.rankablePosts, {
     now: searchResult.meta.metricsCapturedAt,
-    limit: run.settings_snapshot.candidate_limit,
+    // The official lanes are already bounded by candidate_limit. Rank the
+    // complete additive pool so For You cannot truncate followed posts before
+    // the followed-first selector gets a chance to preserve them.
+    limit: searchResult.rankablePosts.length,
+    prioritySourceChannel: "followed",
   });
   const selected = selectHybridAiInput(ranked, {
     limit: run.settings_snapshot.ai_input_limit,
@@ -232,14 +257,39 @@ export async function fetchAndRank({ runId, ownerId }) {
     throwDatabaseError(rankingError, "saving deterministic rankings");
   }
 
+  const forYouCounts = searchResult.meta.forYouRequested === undefined
+    ? {}
+    : {
+        x_for_you_requested: searchResult.meta.forYouRequested,
+        x_for_you_hydrated: searchResult.meta.forYouHydrated,
+        x_for_you_returned: searchResult.meta.forYouReturned,
+        x_for_you_unavailable: searchResult.meta.forYouUnavailable,
+        x_for_you_unknown: searchResult.meta.forYouUnknown,
+        x_for_you_outside_window: searchResult.meta.forYouOutsideWindow,
+        x_for_you_cross_channel_duplicates:
+          searchResult.meta.forYouCrossChannelDuplicates,
+        x_for_you_reposts_rejected:
+          searchResult.meta.forYouRepostsRejected,
+        x_for_you_quotes_rejected: searchResult.meta.forYouQuotesRejected,
+        x_for_you_view_quality_rejected:
+          searchResult.meta.forYouViewQualityRejected,
+        x_for_you_quality_passed: searchResult.meta.forYouQualityPassed,
+        sent_to_luna_for_you: selected.filter(
+          (post) => post.source_channel === "for_you",
+        ).length,
+      };
   const counts = {
     ...(run.counts || {}),
     x_returned: posts.length,
     x_raw_returned: searchResult.meta.rawResultCount,
     x_followed_accounts_configured:
       searchResult.meta.followedAccountsConfigured,
+    x_followed_query_batches: searchResult.meta.followedQueryBatches,
+    x_followed_requested: searchResult.meta.followedRequestedLimit,
     x_followed_returned: searchResult.meta.followedReturned,
+    x_followed_batch_duplicates: searchResult.meta.followedBatchDuplicates,
     x_followed_quality_passed: searchResult.meta.followedQualityPassed,
+    x_topic_requested: searchResult.meta.topicRequestedLimit,
     x_topic_returned: searchResult.meta.topicReturned,
     x_topic_quality_passed: searchResult.meta.topicQualityPassed,
     x_view_floor_passed: searchResult.meta.qualityPassed,
@@ -253,6 +303,7 @@ export async function fetchAndRank({ runId, ownerId }) {
     sent_to_luna_topic: selected.filter(
       (post) => post.source_channel === "topic",
     ).length,
+    ...forYouCounts,
     x_partial: searchResult.partial,
   };
 
@@ -695,6 +746,30 @@ export async function prepareResearchJob({ runId, ownerId, clusterIds }) {
   return jobId;
 }
 prepareResearchJob.maxRetries = 3;
+
+export async function recordXForYouConnectionStatus({
+  runId,
+  ownerId,
+  authState,
+  errorCode = null,
+}) {
+  "use step";
+
+  requireWorkflowArgs({ runId, ownerId });
+  const db = createSupabaseAdminClient();
+  const run = await loadRun(db, runId, ownerId);
+  const checkedAt = new Date().toISOString();
+  await updateRun(db, runId, ownerId, {
+    counts: buildXForYouConnectionCounts(
+      run.counts,
+      { authState, errorCode },
+      checkedAt,
+    ),
+  });
+
+  return Object.freeze({ authState, checkedAt, errorCode });
+}
+recordXForYouConnectionStatus.maxRetries = 3;
 
 export async function recordWorkflowFailure({ runId, ownerId, message }) {
   "use step";

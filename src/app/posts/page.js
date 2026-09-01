@@ -5,8 +5,9 @@ import { POST_QUALITY } from "@/lib/config";
 export const metadata = { title: "Source feed" };
 export const dynamic = "force-dynamic";
 
-const SOURCE_FILTERS = new Set(["all", "followed", "topic"]);
+const SOURCE_FILTERS = new Set(["all", "followed", "topic", "for_you"]);
 const VIEW_FILTERS = new Set(["all", "selected", "signals"]);
+const VIEW_FLOOR_RANKING_VERSIONS = new Set(["views_v3", POST_QUALITY.version]);
 
 function clean(value, maximum = 100) {
   return typeof value === "string" ? value.trim().slice(0, maximum) : "";
@@ -36,7 +37,19 @@ function runLabel(run) {
 }
 
 function sourceLabel(channel) {
-  return channel === "followed" ? "Followed account" : "Topic discovery";
+  if (channel === "followed") return "Followed account";
+  if (channel === "for_you") return "For You discovery";
+  return "Topic discovery";
+}
+
+function sourceBadgeClass(channel) {
+  if (channel === "followed") {
+    return "bg-[var(--moss-bright)]/30 text-[#2b4d3f]";
+  }
+  if (channel === "for_you") {
+    return "bg-[var(--amber)]/20 text-[#77521d]";
+  }
+  return "bg-[var(--ink)]/7 text-[var(--ink-soft)]";
 }
 
 function PostCard({ snapshot, rankingVersion, minimumViews }) {
@@ -51,20 +64,20 @@ function PostCard({ snapshot, rankingVersion, minimumViews }) {
   const usesViewFirstRanking =
     rankingVersion === POST_QUALITY.version ||
     Object.hasOwn(metrics, "impression_count");
-  const usesCurrentViewFloor = rankingVersion === POST_QUALITY.version;
+  const usesVersionedViewFloor =
+    VIEW_FLOOR_RANKING_VERSIONS.has(rankingVersion) &&
+    Number.isFinite(minimumViews) &&
+    minimumViews > 0;
   const viewCount = Number(metrics.impression_count);
+  const viewFloor = compactNumber(minimumViews);
   const belowViewFloor =
-    usesCurrentViewFloor &&
+    usesVersionedViewFloor &&
     (!Number.isFinite(viewCount) || viewCount < minimumViews);
 
   return (
     <article className="panel overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-[var(--line)] px-5 py-3">
-        <span className={`rounded-full px-2.5 py-1 text-[0.68rem] font-bold ${
-          snapshot.source_channel === "followed"
-            ? "bg-[var(--moss-bright)]/30 text-[#2b4d3f]"
-            : "bg-[var(--ink)]/7 text-[var(--ink-soft)]"
-        }`}>
+        <span className={`rounded-full px-2.5 py-1 text-[0.68rem] font-bold ${sourceBadgeClass(snapshot.source_channel)}`}>
           {sourceLabel(snapshot.source_channel)}
         </span>
         {snapshot.selected_for_ai && (
@@ -74,7 +87,7 @@ function PostCard({ snapshot, rankingVersion, minimumViews }) {
         )}
         {belowViewFloor && (
           <span className="rounded-full bg-[var(--rose)]/10 px-2.5 py-1 text-[0.68rem] font-bold text-[#88483f]">
-            Below 50K floor · not eligible
+            Below {viewFloor} floor · not eligible
           </span>
         )}
         {snapshot.relevant === true && (
@@ -154,8 +167,8 @@ function PostCard({ snapshot, rankingVersion, minimumViews }) {
         )}
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-3 text-[0.68rem] text-[var(--ink-soft)]">
-          <span>Search position {snapshot.search_position ?? "—"}</span>
-          <span>{usesCurrentViewFloor ? "50K-qualified score" : usesViewFirstRanking ? "View-first score" : "Legacy score"} {Number.isFinite(snapshot.deterministic_score) ? snapshot.deterministic_score.toFixed(2) : "—"}</span>
+          <span>{snapshot.source_channel === "for_you" ? "Feed" : "Search"} position {snapshot.search_position ?? "—"}</span>
+          <span>{usesVersionedViewFloor ? `${viewFloor}-qualified score` : usesViewFirstRanking ? "View-first score" : "Legacy score"} {Number.isFinite(snapshot.deterministic_score) ? snapshot.deterministic_score.toFixed(2) : "—"}</span>
         </div>
       </div>
     </article>
@@ -215,15 +228,20 @@ export default async function PostsPage({ searchParams }) {
   }
 
   const counts = selectedRun?.counts || {};
-  const usesCurrentViewFloor =
-    selectedRun?.settings_snapshot?.ranking_version === POST_QUALITY.version;
   const minimumViews = Number.isFinite(
     Number(selectedRun?.settings_snapshot?.minimum_views),
   )
     ? Number(selectedRun.settings_snapshot.minimum_views)
     : POST_QUALITY.minimumViews;
+  const usesVersionedViewFloor =
+    VIEW_FLOOR_RANKING_VERSIONS.has(
+      selectedRun?.settings_snapshot?.ranking_version,
+    ) &&
+    minimumViews > 0;
+  const currentViewFloor = compactNumber(POST_QUALITY.minimumViews);
   const followedSelected = Number(counts.sent_to_luna_followed) || 0;
   const topicSelected = Number(counts.sent_to_luna_topic) || 0;
+  const forYouSelected = Number(counts.sent_to_luna_for_you) || 0;
 
   return (
     <main className="shell py-9 sm:py-12">
@@ -232,7 +250,7 @@ export default async function PostsPage({ searchParams }) {
           <p className="eyebrow">Source feed</p>
           <h1 className="mt-2 text-4xl font-semibold tracking-[-0.055em] sm:text-5xl">See what the research actually read.</h1>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--ink-soft)]">
-            Inspect stored X posts, view-first quality metrics, selection decisions, and model-added signals. New runs require at least 50K views; retrieved posts below that floor remain visible here only for auditing. Raw post text is retained for up to 30 days.
+            Inspect stored X posts, view-first quality metrics, selection decisions, and model-added signals. New runs require at least {currentViewFloor} views; retrieved posts below that floor remain visible here only for auditing. Raw post text is retained for up to 30 days.
           </p>
         </div>
         <Link href="/settings#x-sources" className="focus-ring rounded-xl bg-[var(--ink)] px-4 py-3 text-sm font-bold text-white">
@@ -254,6 +272,7 @@ export default async function PostsPage({ searchParams }) {
             <option value="all">All sources</option>
             <option value="followed">Followed accounts</option>
             <option value="topic">Topic discovery</option>
+            <option value="for_you">For You discovery</option>
           </select>
         </label>
         <label className="text-xs font-bold">
@@ -268,14 +287,14 @@ export default async function PostsPage({ searchParams }) {
       </form>
 
       {selectedRun && (
-        <section className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+        <section className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
           <div className="panel px-4 py-4">
             <p className="font-mono text-2xl font-semibold">{Number(counts.x_returned) || 0}</p>
             <p className="mt-1 text-xs font-semibold text-[var(--ink-soft)]">Collected</p>
           </div>
           <div className="panel px-4 py-4">
-            <p className="font-mono text-2xl font-semibold">{Number(usesCurrentViewFloor ? counts.x_view_floor_passed : counts.after_filtering) || 0}</p>
-            <p className="mt-1 text-xs font-semibold text-[var(--ink-soft)]">{usesCurrentViewFloor ? "50K qualified" : "After filtering"}</p>
+            <p className="font-mono text-2xl font-semibold">{Number(usesVersionedViewFloor ? counts.x_view_floor_passed : counts.after_filtering) || 0}</p>
+            <p className="mt-1 text-xs font-semibold text-[var(--ink-soft)]">{usesVersionedViewFloor ? `${compactNumber(minimumViews)} qualified` : "After filtering"}</p>
           </div>
           <div className="panel px-4 py-4">
             <p className="font-mono text-2xl font-semibold">{followedSelected}</p>
@@ -284,6 +303,10 @@ export default async function PostsPage({ searchParams }) {
           <div className="panel px-4 py-4">
             <p className="font-mono text-2xl font-semibold">{topicSelected}</p>
             <p className="mt-1 text-xs font-semibold text-[var(--ink-soft)]">Topic selected</p>
+          </div>
+          <div className="panel px-4 py-4">
+            <p className="font-mono text-2xl font-semibold">{forYouSelected}</p>
+            <p className="mt-1 text-xs font-semibold text-[var(--ink-soft)]">For You selected</p>
           </div>
           <div className="panel px-4 py-4">
             <p className="font-mono text-2xl font-semibold">{Number(counts.relevant_signals) || 0}</p>

@@ -1,19 +1,14 @@
 import "server-only";
 
-import { start } from "workflow/api";
 import { z } from "zod";
-import { PIPELINE } from "@/lib/config";
-import { hashResearchJson } from "@/lib/research/canonical-json";
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { validateResearchResultShape } from "@/lib/validation";
-import { finalizeResearch } from "@/workflows/finalize-research";
-
-const FAILURE_CODES = Object.freeze([
-  "research_unavailable",
-  "source_access_failed",
-  "submission_invalid",
-  "tool_error",
-]);
+import {
+  claimResearchJobForOwner,
+  redriveStrandedResearchFinalization,
+  RESEARCH_FAILURE_CODES,
+  ResearchJobServiceError,
+  reportResearchFailure as reportResearchFailureForOwner,
+  submitResearchResultAndDispatch,
+} from "@/lib/research/job-service";
 
 const UUID = z.string().uuid();
 const JSON_OBJECT = z.record(z.string(), z.json());
@@ -79,102 +74,37 @@ function toolSuccess(output, message) {
   };
 }
 
-function validRpcRow(row, keys) {
-  return (
-    row &&
-    typeof row === "object" &&
-    !Array.isArray(row) &&
-    keys.every((key) => row[key] !== null && row[key] !== undefined)
-  );
-}
-
-function encodedJsonBytes(value) {
-  try {
-    return new TextEncoder().encode(JSON.stringify(value)).byteLength;
-  } catch {
-    return Number.POSITIVE_INFINITY;
-  }
+function safeServiceErrorMessage(error, fallback) {
+  return error instanceof ResearchJobServiceError ? error.message : fallback;
 }
 
 async function claimResearchJob(_input, context) {
   try {
     const ownerId = authorizedOwnerId(context);
-    const db = createSupabaseAdminClient();
-
-    // Submission is durable before finalizer dispatch. If that dispatch was
-    // interrupted after commit, or a validating workflow has been stalled for
-    // at least the configured threshold, the next hourly queue check redrives
-    // the idempotent finalizer before claiming new research. The stale guard
-    // avoids racing a healthy finalizer. Returning `empty` keeps the worker to
-    // one unit of work.
-    const staleValidationBefore = new Date(
-      Date.now() - PIPELINE.research.validationRedriveSeconds * 1_000,
-    ).toISOString();
-    const { data: stranded, error: strandedError } = await db
-      .from("research_jobs")
-      .select("id")
-      .eq("owner_id", ownerId)
-      .or(
-        `status.eq.submitted,and(status.eq.validating,validation_started_at.lt.${staleValidationBefore})`,
-      )
-      .order("submitted_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-
-    if (strandedError) {
-      return toolError("Pending research finalization could not be checked.");
-    }
-    if (stranded?.id) {
-      try {
-        await start(finalizeResearch, [{ jobId: stranded.id, ownerId }]);
-      } catch {
-        return toolError("Pending research finalization could not be restarted.");
-      }
-
+    const recovery = await redriveStrandedResearchFinalization(ownerId);
+    if (recovery) {
       return toolSuccess(
         { status: "empty" },
         "Pending research finalization was restarted; no job was claimed.",
       );
     }
 
-    const { data, error } = await db
-      .rpc("claim_pending_research_job", {
-        p_owner_id: ownerId,
-        p_lease_seconds: PIPELINE.research.leaseSeconds,
-      })
-      .maybeSingle();
-
-    if (error) return toolError("A research job could not be claimed.");
-    if (!data) {
+    const claimed = await claimResearchJobForOwner(ownerId);
+    if (!claimed) {
       return toolSuccess({ status: "empty" }, "No research job is pending.");
-    }
-
-    const required = [
-      "research_job_id",
-      "run_id",
-      "schema_version",
-      "prompt_version",
-      "job_payload",
-      "payload_hash",
-      "claim_id",
-      "lease_expires_at",
-      "attempt_count",
-    ];
-    if (!validRpcRow(data, required)) {
-      return toolError("The claimed research job was incomplete.");
     }
 
     const output = {
       status: "claimed",
-      job_id: data.research_job_id,
-      run_id: data.run_id,
-      schema_version: data.schema_version,
-      prompt_version: data.prompt_version,
-      payload: data.job_payload,
-      payload_hash: data.payload_hash,
-      claim_id: data.claim_id,
-      lease_expires_at: data.lease_expires_at,
-      attempt_count: data.attempt_count,
+      job_id: claimed.jobId,
+      run_id: claimed.runId,
+      schema_version: claimed.schemaVersion,
+      prompt_version: claimed.promptVersion,
+      payload: claimed.payload,
+      payload_hash: claimed.payloadHash,
+      claim_id: claimed.claimId,
+      lease_expires_at: claimed.leaseExpiresAt,
+      attempt_count: claimed.attemptCount,
     };
 
     const parsed = claimOutputSchema.safeParse(output);
@@ -183,8 +113,10 @@ async function claimResearchJob(_input, context) {
     }
 
     return toolSuccess(parsed.data, "A research job was claimed.");
-  } catch {
-    return toolError("A research job could not be claimed.");
+  } catch (error) {
+    return toolError(
+      safeServiceErrorMessage(error, "A research job could not be claimed."),
+    );
   }
 }
 
@@ -192,78 +124,33 @@ async function submitResearchResult(
   { job_id: jobId, claim_id: claimId, schema_version: schemaVersion, result },
   context,
 ) {
-  let normalized;
-
-  try {
-    if (encodedJsonBytes(result) > PIPELINE.research.maxResultBytes) {
-      return toolError("The research result exceeds the submission limit.");
-    }
-
-    normalized = validateResearchResultShape(result);
-    if (
-      schemaVersion !== PIPELINE.research.schemaVersion ||
-      normalized.schema_version !== schemaVersion
-    ) {
-      return toolError("The research result schema version is unsupported.");
-    }
-  } catch {
-    return toolError("The research result does not match the required schema.");
-  }
-
   try {
     const ownerId = authorizedOwnerId(context);
-    const resultHash = hashResearchJson(normalized);
-    const { data, error } = await createSupabaseAdminClient()
-      .rpc("submit_research_result", {
-        p_owner_id: ownerId,
-        p_job_id: jobId,
-        p_claim_id: claimId,
-        p_result: normalized,
-        p_result_hash: resultHash,
-      })
-      .maybeSingle();
-
-    if (
-      error ||
-      !validRpcRow(data, [
-        "research_job_id",
-        "run_id",
-        "research_status",
-        "newly_submitted",
-      ])
-    ) {
-      return toolError("The research result was not accepted.");
-    }
-
-    // The result is durable before dispatch. An identical replay can redrive a
-    // still-submitted result, but it must not duplicate an active validating
-    // workflow or a completed publication.
-    if (data.newly_submitted || data.research_status === "submitted") {
-      try {
-        await start(finalizeResearch, [
-          { jobId: data.research_job_id, ownerId },
-        ]);
-      } catch {
-        return toolError(
-          "The result was saved, but finalization did not start. Retry this same submission.",
-        );
-      }
-    }
+    const submitted = await submitResearchResultAndDispatch({
+      ownerId,
+      jobId,
+      claimId,
+      schemaVersion,
+      result,
+    });
 
     const output = {
-      status: data.newly_submitted ? "accepted" : "already_accepted",
-      job_id: data.research_job_id,
-      run_id: data.run_id,
-      research_status: data.research_status,
+      status: submitted.status,
+      job_id: submitted.jobId,
+      run_id: submitted.runId,
+      research_status: submitted.researchStatus,
     };
+
     const parsed = submitOutputSchema.safeParse(output);
     if (!parsed.success) {
       return toolError("The result was saved, but its status was unavailable.");
     }
 
     return toolSuccess(parsed.data, "The research result was accepted.");
-  } catch {
-    return toolError("The research result was not accepted.");
+  } catch (error) {
+    return toolError(
+      safeServiceErrorMessage(error, "The research result was not accepted."),
+    );
   }
 }
 
@@ -273,38 +160,33 @@ async function reportResearchFailure(
 ) {
   try {
     const ownerId = authorizedOwnerId(context);
-    const { data, error } = await createSupabaseAdminClient()
-      .rpc("report_research_job_failure", {
-        p_owner_id: ownerId,
-        p_job_id: jobId,
-        p_claim_id: claimId,
-        p_error_code: errorCode,
-        p_retry_delay_seconds: 900,
-      })
-      .maybeSingle();
-
-    if (
-      error ||
-      !validRpcRow(data, ["research_job_id", "research_status"])
-    ) {
-      return toolError("The research failure could not be recorded.");
-    }
+    const result = await reportResearchFailureForOwner({
+      ownerId,
+      jobId,
+      claimId,
+      errorCode,
+    });
 
     const output = {
-      status:
-        data.research_status === "failed" ? "failed" : "retry_scheduled",
-      job_id: data.research_job_id,
-      research_status: data.research_status,
-      retry_at: data.retry_at ?? null,
+      status: result.status,
+      job_id: result.jobId,
+      research_status: result.researchStatus,
+      retry_at: result.retryAt,
     };
+
     const parsed = failureOutputSchema.safeParse(output);
     if (!parsed.success) {
       return toolError("The research failure status was unavailable.");
     }
 
     return toolSuccess(parsed.data, "The research failure was recorded.");
-  } catch {
-    return toolError("The research failure could not be recorded.");
+  } catch (error) {
+    return toolError(
+      safeServiceErrorMessage(
+        error,
+        "The research failure could not be recorded.",
+      ),
+    );
   }
 }
 
@@ -369,7 +251,7 @@ export function registerResearchTools(server) {
           job_id: UUID.describe("Claimed research job UUID."),
           claim_id: UUID.describe("Active claim capability UUID."),
           error_code: z
-            .enum(FAILURE_CODES)
+            .enum(RESEARCH_FAILURE_CODES)
             .describe("Safe failure category; never include source text or secrets."),
         })
         .strict(),

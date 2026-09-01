@@ -1,0 +1,98 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Production-only Vercel OIDC caller role for the pinned Signal Foundry X For
+  You EC2 worker. Grants only instance lifecycle and SSM Run Command access;
+  it grants no secret, S3, or X access.
+
+Resources:
+  VercelOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://oidc.vercel.com/admins-projects-d500137d
+      ClientIdList:
+        - https://vercel.com/admins-projects-d500137d
+      Tags:
+        - Key: Project
+          Value: SignalFoundry
+        - Key: Component
+          Value: XForYouCollector
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  VercelXForYouCallerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: signal-foundry-vercel-x-for-you
+      Description: >-
+        Allows only the production Signal Foundry Vercel workload to start,
+        invoke, inspect, and stop the pinned X For You collector instance.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: TrustExactVercelProductionProject
+            Effect: Allow
+            Principal:
+              Federated: !Ref VercelOidcProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                oidc.vercel.com/admins-projects-d500137d:aud: https://vercel.com/admins-projects-d500137d
+                oidc.vercel.com/admins-projects-d500137d:sub: owner:admins-projects-d500137d:project:admins-projects-d500137d:environment:production
+      Policies:
+        - PolicyName: PinnedXForYouWorkerControl
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: StartAndStopPinnedInstance
+                Effect: Allow
+                Action:
+                  - ec2:StartInstances
+                  - ec2:StopInstances
+                Resource: !Sub arn:${AWS::Partition}:ec2:us-east-2:${AWS::AccountId}:instance/i-064c47109859601d1
+
+              - Sid: DescribeInstancesInPinnedRegion
+                Effect: Allow
+                Action: ec2:DescribeInstances
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: us-east-2
+
+              - Sid: RunShellScriptOnPinnedInstance
+                Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:us-east-2::document/AWS-RunShellScript
+                  - !Sub arn:${AWS::Partition}:ec2:us-east-2:${AWS::AccountId}:instance/i-064c47109859601d1
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: us-east-2
+
+              - Sid: InspectSsmReadinessAndInvocationInPinnedRegion
+                Effect: Allow
+                Action:
+                  - ssm:DescribeInstanceInformation
+                  - ssm:GetCommandInvocation
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: us-east-2
+      Tags:
+        - Key: Project
+          Value: SignalFoundry
+        - Key: Component
+          Value: XForYouCollector
+        - Key: ManagedBy
+          Value: CloudFormation
+
+Outputs:
+  OidcProviderArn:
+    Description: Exact Vercel team OIDC provider trusted by the caller role.
+    Value: !Ref VercelOidcProvider
+  RoleArn:
+    Description: Role ARN for the Vercel OIDC AWS credentials provider.
+    Value: !GetAtt VercelXForYouCallerRole.Arn
+  RoleName:
+    Description: Stable IAM role name.
+    Value: !Ref VercelXForYouCallerRole

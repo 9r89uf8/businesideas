@@ -14,10 +14,12 @@ import { passesPostQualityGate } from "../ranking.js";
 
 const MAX_PAGES = 2;
 const MAX_RESULTS_PER_PAGE = 100;
-const MAX_CANDIDATES = MAX_PAGES * MAX_RESULTS_PER_PAGE;
+const MIN_RESULTS_PER_PAGE = 10;
+const MAX_CANDIDATES = PIPELINE.maxCandidates;
 const MIN_PARTIAL_RESULT_COUNT = 50;
-const MAX_FOLLOWED_USERNAMES = 12;
+const MAX_FOLLOWED_USERNAMES = 50;
 const MAX_X_QUERY_LENGTH = 512;
+const MAX_TOPIC_FALLBACK_SHARE = 0.2;
 const RECENT_SEARCH_WINDOW_MS = 7 * 24 * 60 * 60 * 1_000;
 const RESEARCH_WINDOW_MS =
   PIPELINE.researchWindowHours * 60 * 60 * 1_000;
@@ -147,6 +149,38 @@ export function buildFollowedAccountsQuery(usernames) {
 }
 
 /**
+ * Splits the complete configured account list into X queries without dropping
+ * valid usernames or exceeding the recent-search query-length limit.
+ */
+export function buildFollowedAccountsQueries(usernames) {
+  const normalized = normalizeFollowedUsernames(usernames);
+  const queries = [];
+  let batch = [];
+
+  for (const username of normalized) {
+    const candidateBatch = [...batch, username];
+
+    try {
+      buildFollowedAccountsQuery(candidateBatch);
+      batch = candidateBatch;
+    } catch (error) {
+      if (!(error instanceof RangeError) || batch.length === 0) {
+        throw error;
+      }
+
+      queries.push(buildFollowedAccountsQuery(batch));
+      batch = [username];
+    }
+  }
+
+  if (batch.length > 0) {
+    queries.push(buildFollowedAccountsQuery(batch));
+  }
+
+  return queries;
+}
+
+/**
  * Followed accounts are a discovery preference, not a quality exemption.
  * They must clear the same raw-view floor as topic-discovery posts.
  */
@@ -207,7 +241,7 @@ export async function searchRecentPosts({
     const remaining = requestedLimit - posts.length;
     const maxResults = Math.min(
       MAX_RESULTS_PER_PAGE,
-      Math.max(10, remaining),
+      Math.max(MIN_RESULTS_PER_PAGE, remaining),
     );
     const searchParams = {
       query: query.trim(),
@@ -287,16 +321,88 @@ export async function searchRecentPosts({
   };
 }
 
+async function searchFollowedAccountBatches({
+  queries,
+  startTime,
+  endTime,
+  limit,
+  fetchImpl,
+  signal,
+}) {
+  const posts = [];
+  const seenIds = new Set();
+  let rawResultCount = 0;
+  let duplicateCount = 0;
+  let pagesFetched = 0;
+  let partial = false;
+  let partialError = null;
+  let windowStart = null;
+  let windowEnd = null;
+
+  for (
+    let index = 0;
+    index < queries.length && rawResultCount < limit;
+    index += 1
+  ) {
+    const remainingQueries = queries.length - index;
+    const remainingRawBudget = limit - rawResultCount;
+    const reservedForLaterBatches =
+      MIN_RESULTS_PER_PAGE * (remainingQueries - 1);
+    const batchLimit = Math.max(
+      1,
+      remainingRawBudget - reservedForLaterBatches,
+    );
+    const result = await searchRecentPosts({
+      query: queries[index],
+      startTime,
+      endTime,
+      limit: batchLimit,
+      fetchImpl,
+      signal,
+    });
+
+    rawResultCount += result.posts.length;
+    pagesFetched += result.meta.pagesFetched;
+    partial ||= result.partial;
+    partialError ||= result.partialError;
+    windowStart ||= result.meta.windowStart;
+    windowEnd ||= result.meta.windowEnd;
+
+    for (const post of result.posts) {
+      if (seenIds.has(post.id)) {
+        duplicateCount += 1;
+        continue;
+      }
+      seenIds.add(post.id);
+      posts.push({
+        ...post,
+        search_position: posts.length + 1,
+      });
+    }
+  }
+
+  return {
+    posts,
+    rawResultCount,
+    duplicateCount,
+    pagesFetched,
+    partial,
+    partialError,
+    windowStart,
+    windowEnd,
+  };
+}
+
 /**
- * Retrieves followed-account candidates first, then spends every remaining
- * candidate slot on the editable topic query. The followed request is bounded
- * by half the AI input size, so it cannot reduce topic discovery by more than
- * the number of Luna slots it could actually occupy.
+ * Retrieves followed-account candidates first across query-length-safe batches.
+ * Configured accounts may fill the entire candidate pool. Topic discovery is a
+ * bounded fallback that can use only unfilled capacity and at most one fifth of
+ * the run limit.
  *
  * `rankablePosts` contains only posts from either lane that clear the view floor.
  * `posts` is the bounded snapshot stored for inspection: it contains every
- * rankable post, then rejected topic candidates, and uses only spare capacity
- * for rejected followed candidates from the additive probe.
+ * rankable post, then rejected followed-account candidates, then rejected topic
+ * fallback candidates.
  */
 export async function searchHybridRecentPosts({
   query,
@@ -305,7 +411,6 @@ export async function searchHybridRecentPosts({
   endTime,
   qualityTime,
   candidateLimit = MAX_CANDIDATES,
-  aiInputLimit = 100,
   fetchImpl = globalThis.fetch,
   signal,
 } = {}) {
@@ -315,20 +420,15 @@ export async function searchHybridRecentPosts({
       ? new Date()
       : parseTime(qualityTime, "qualityTime");
   const normalizedUsernames = normalizeFollowedUsernames(followedUsernames);
-  const normalizedAiInputLimit =
-    Number.isInteger(aiInputLimit) && aiInputLimit > 0
-      ? Math.min(aiInputLimit, requestedCandidateLimit)
-      : 0;
-  const followedRequestedLimit = Math.min(
-    Math.floor(normalizedAiInputLimit / 2),
-    Math.floor(requestedCandidateLimit / 2),
-  );
-  const followedQuery = buildFollowedAccountsQuery(normalizedUsernames);
+  const followedRequestedLimit = normalizedUsernames.length
+    ? requestedCandidateLimit
+    : 0;
+  const followedQueries = buildFollowedAccountsQueries(normalizedUsernames);
   let followedResult = null;
 
-  if (followedQuery && followedRequestedLimit > 0) {
-    followedResult = await searchRecentPosts({
-      query: followedQuery,
+  if (followedQueries.length > 0 && followedRequestedLimit > 0) {
+    followedResult = await searchFollowedAccountBatches({
+      queries: followedQueries,
       startTime,
       endTime,
       limit: followedRequestedLimit,
@@ -344,21 +444,37 @@ export async function searchHybridRecentPosts({
   const followedQualityPosts = followedPosts.filter((post) =>
     isEligiblePost(post),
   );
-  const topicRequestedLimit =
-    requestedCandidateLimit - followedQualityPosts.length;
-  const topicResult = await searchRecentPosts({
-    query,
-    startTime,
-    endTime,
-    limit: topicRequestedLimit,
-    fetchImpl,
-    signal,
-  });
+  const unfilledCandidateSlots =
+    requestedCandidateLimit - (followedResult?.rawResultCount || 0);
+  const maximumTopicFallback = Math.ceil(
+    requestedCandidateLimit * MAX_TOPIC_FALLBACK_SHARE,
+  );
+  const availableTopicFallback = Math.min(
+    unfilledCandidateSlots,
+    maximumTopicFallback,
+  );
+  const topicRequestedLimit = followedResult?.partial
+    ? 0
+    : followedQueries.length
+      ? availableTopicFallback >= MIN_RESULTS_PER_PAGE
+        ? availableTopicFallback
+        : 0
+      : requestedCandidateLimit;
+  const topicResult = topicRequestedLimit > 0
+    ? await searchRecentPosts({
+        query,
+        startTime,
+        endTime,
+        limit: topicRequestedLimit,
+        fetchImpl,
+        signal,
+      })
+    : null;
   const followedIds = new Set(followedPosts.map((post) => post.id));
   const followedQualityIds = new Set(
     followedQualityPosts.map((post) => post.id),
   );
-  const topicPosts = topicResult.posts
+  const topicPosts = (topicResult?.posts || [])
     .filter((post) => !followedIds.has(post.id))
     .map((post) => ({
       ...post,
@@ -378,37 +494,51 @@ export async function searchHybridRecentPosts({
   );
   const posts = [
     ...rankablePosts,
-    ...failedTopicPosts,
     ...failedFollowedPosts,
-  ].slice(0, requestedCandidateLimit);
+    ...failedTopicPosts,
+  ]
+    .slice(0, requestedCandidateLimit)
+    .map((post, index) => ({
+      ...post,
+      search_position: index + 1,
+    }));
+  const searchPositions = new Map(
+    posts.map((post) => [post.id, post.search_position]),
+  );
+  const positionedRankablePosts = rankablePosts.map((post) => ({
+    ...post,
+    search_position: searchPositions.get(post.id) || post.search_position,
+  }));
 
   return {
     posts,
-    rankablePosts,
-    partial: Boolean(followedResult?.partial || topicResult.partial),
-    partialError: followedResult?.partialError || topicResult.partialError,
+    rankablePosts: positionedRankablePosts,
+    partial: Boolean(followedResult?.partial || topicResult?.partial),
+    partialError: followedResult?.partialError || topicResult?.partialError,
     meta: {
       resultCount: posts.length,
       rawResultCount:
-        followedPosts.length + topicResult.posts.length,
+        (followedResult?.rawResultCount || 0) + (topicResult?.posts.length || 0),
       requestedLimit: requestedCandidateLimit,
       windowStart:
-        followedResult?.meta.windowStart || topicResult.meta.windowStart,
-      windowEnd: followedResult?.meta.windowEnd || topicResult.meta.windowEnd,
+        followedResult?.windowStart || topicResult?.meta.windowStart,
+      windowEnd: followedResult?.windowEnd || topicResult?.meta.windowEnd,
       metricsCapturedAt: metricsCapturedAt.toISOString(),
       followedAccountsConfigured: normalizedUsernames.length,
-      followedRequestedLimit: followedQuery ? followedRequestedLimit : 0,
+      followedQueryBatches: followedQueries.length,
+      followedRequestedLimit,
       followedReturned: followedPosts.length,
+      followedBatchDuplicates: followedResult?.duplicateCount || 0,
       followedQualityPassed: followedQualityPosts.length,
       topicRequestedLimit,
       topicReturned: topicPosts.length,
       topicQualityPassed: topicQualityPosts.length,
       qualityPassed: rankablePosts.length,
       crossChannelDuplicates:
-        topicResult.posts.filter((post) => followedIds.has(post.id)).length,
+        (topicResult?.posts || []).filter((post) => followedIds.has(post.id)).length,
       pagesFetched:
-        (followedResult?.meta.pagesFetched || 0) +
-        topicResult.meta.pagesFetched,
+        (followedResult?.pagesFetched || 0) +
+        (topicResult?.meta.pagesFetched || 0),
     },
   };
 }

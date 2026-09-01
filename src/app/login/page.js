@@ -154,7 +154,7 @@ export default function LoginPage() {
 
           <div className="mt-12 grid grid-cols-3 gap-3 border-t border-white/12 pt-6">
             {[
-              ["200", "posts scanned"],
+              ["100", "posts scanned"],
               ["3", "model passes"],
               ["0–3", "ideas kept"],
             ].map(([value, label]) => (

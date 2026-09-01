@@ -3,6 +3,8 @@ import EmptyReport from "@/components/empty-report";
 import IdeaCard from "@/components/idea-card";
 import RunStatus from "@/components/run-status";
 import { describeRun } from "@/components/run-status-state";
+import XForYouConnectionStatus from "@/components/x-for-you-connection-status";
+import { describeXForYouConnection } from "@/components/x-for-you-connection-state";
 import { requireOwner } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
@@ -61,7 +63,12 @@ function RunTableStatus({ run }) {
 export default async function DashboardPage() {
   const { ownerId, supabase } = await requireOwner();
 
-  const [runsResult, successfulResult] = await Promise.all([
+  const [
+    runsResult,
+    successfulResult,
+    latestForYouCheckResult,
+    latestHealthyForYouResult,
+  ] = await Promise.all([
     supabase
       .from("runs")
       .select("id, status, stage, counts, error_message, trigger, created_at, started_at, completed_at")
@@ -76,10 +83,33 @@ export default async function DashboardPage() {
       .order("completed_at", { ascending: false })
       .limit(1)
       .maybeSingle(),
+    supabase
+      .from("runs")
+      .select("id, counts, created_at")
+      .eq("owner_id", ownerId)
+      .not("counts->>x_for_you_checked_at", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from("runs")
+      .select("id, counts, created_at")
+      .eq("owner_id", ownerId)
+      .eq("counts->>x_for_you_auth_state", "healthy")
+      .not("counts->>x_for_you_success_at", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
   ]);
 
   const { data: recentRuns, error: runsError } = runsResult;
   const { data: lastSuccessfulRun, error: successfulError } = successfulResult;
+  const latestForYouCheck = latestForYouCheckResult.error
+    ? null
+    : latestForYouCheckResult.data;
+  const latestHealthyForYouRun = latestHealthyForYouResult.error
+    ? null
+    : latestHealthyForYouResult.data;
 
   if (runsError || successfulError) {
     return (
@@ -131,6 +161,13 @@ export default async function DashboardPage() {
 
   const counts = latestRun?.counts || {};
   const latestRunDescription = describeRun(latestRun);
+  const forYouConnection = describeXForYouConnection({
+    latestCheckedRun: latestForYouCheck,
+    latestHealthyRun: latestHealthyForYouRun,
+    unavailable: Boolean(
+      latestForYouCheckResult.error || latestHealthyForYouResult.error,
+    ),
+  });
   const metrics = [
     { label: "Candidates", value: countValue(counts, ["after_filtering", "x_returned"]) },
     { label: "Signals", value: countValue(counts, ["relevant_signals"]) },
@@ -157,6 +194,10 @@ export default async function DashboardPage() {
 
       <div className="mt-8">
         <RunStatus initialRun={latestRun} />
+      </div>
+
+      <div className="mt-5">
+        <XForYouConnectionStatus status={forYouConnection} />
       </div>
 
       {latestRun && (

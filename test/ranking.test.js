@@ -26,7 +26,7 @@ const NOW = new Date("2026-08-27T12:00:00.000Z");
 function candidate({
   id,
   author = "author-a",
-  views = 50_000,
+  views = 19_000,
   comments = 0,
   likes = 0,
   saves = 0,
@@ -161,11 +161,11 @@ test("views dominate comments, which outrank likes and saves", () => {
   );
 });
 
-test("requires at least 50,000 raw views before any engagement ranking", () => {
+test("requires at least 19,000 raw views before any engagement ranking", () => {
   const justBelow = candidate({
     id: "just-below",
     author: "below-author",
-    views: 49_999,
+    views: 18_999,
     comments: 1_000_000,
     likes: 1_000_000,
     saves: 1_000_000,
@@ -173,7 +173,7 @@ test("requires at least 50,000 raw views before any engagement ranking", () => {
   const boundary = candidate({
     id: "boundary",
     author: "boundary-author",
-    views: 50_000,
+    views: 19_000,
   });
   const missing = candidate({ id: "missing", author: "missing-author" });
   delete missing.public_metrics.impression_count;
@@ -297,7 +297,7 @@ test("filters, deduplicates, ranks, and enforces three posts per author", () => 
   }
 });
 
-test("hybrid AI selection caps followed posts at half without forcing a quota", () => {
+test("hybrid AI selection takes followed posts first without forcing a quota", () => {
   const ranked = [
     { id: "followed-1", source_channel: "followed" },
     { id: "topic-1", source_channel: "topic" },
@@ -318,12 +318,18 @@ test("hybrid AI selection caps followed posts at half without forcing a quota", 
       "followed-2",
       "followed-3",
       "topic-2",
-      "topic-3",
+      "followed-4",
     ],
   );
   assert.equal(
     selected.filter((post) => post.source_channel === "followed").length,
-    3,
+    4,
+  );
+
+  const onlyFollowed = selectHybridAiInput(ranked, { limit: 3 });
+  assert.deepEqual(
+    onlyFollowed.map((post) => post.id),
+    ["followed-1", "followed-2", "followed-3"],
   );
 
   const withoutForcedQuota = selectHybridAiInput(
@@ -337,6 +343,140 @@ test("hybrid AI selection caps followed posts at half without forcing a quota", 
   );
   assert.equal(withoutForcedQuota.length, 5);
   assert.throws(() => selectHybridAiInput(null, { limit: 5 }), /array/);
+});
+
+test("an over-cap For You pool cannot crowd followed posts out before selection", () => {
+  const followed = Array.from({ length: 4 }, (_, index) => candidate({
+    id: `followed-${index + 1}`,
+    author: `followed-author-${index + 1}`,
+    views: 19_000 + index,
+    source_channel: "followed",
+  }));
+  const forYou = Array.from({ length: 100 }, (_, index) => candidate({
+    id: `for-you-${index + 1}`,
+    author: `for-you-author-${index + 1}`,
+    views: 1_000_000 + index,
+    source_channel: "for_you",
+  }));
+
+  const additivePool = [...followed, ...forYou];
+  const ranked = rankPosts(additivePool, {
+    now: NOW,
+    limit: additivePool.length,
+    prioritySourceChannel: "followed",
+  });
+  const selected = selectHybridAiInput(ranked, { limit: 6 });
+
+  assert.deepEqual(
+    selected
+      .filter((post) => post.source_channel === "followed")
+      .map((post) => post.id)
+      .sort(),
+    followed.map((post) => post.id).sort(),
+  );
+  assert.equal(selected.length, 6);
+});
+
+test("followed priority applies before cross-channel deduplication and author caps", () => {
+  const duplicateText =
+    "A recurring manual AI workflow problem costs this operations team hours every week.";
+  const posts = [
+    candidate({
+      id: "followed-duplicate",
+      author: "followed-author",
+      views: 19_000,
+      text: duplicateText,
+      source_channel: "followed",
+    }),
+    candidate({
+      id: "for-you-duplicate",
+      author: "for-you-author",
+      views: 2_000_000,
+      text: duplicateText,
+      source_channel: "for_you",
+    }),
+    candidate({
+      id: "followed-same-author-1",
+      author: "shared-author",
+      views: 19_001,
+      source_channel: "followed",
+    }),
+    candidate({
+      id: "followed-same-author-2",
+      author: "shared-author",
+      views: 19_002,
+      source_channel: "followed",
+    }),
+    ...Array.from({ length: 3 }, (_, index) => candidate({
+      id: `for-you-same-author-${index + 1}`,
+      author: "shared-author",
+      views: 1_000_000 + index,
+      source_channel: "for_you",
+    })),
+  ];
+
+  const ranked = rankPosts(posts, {
+    now: NOW,
+    limit: posts.length,
+    maxPerAuthor: 3,
+    prioritySourceChannel: "followed",
+  });
+  const ids = ranked.map((post) => post.id);
+
+  assert.equal(ids.includes("followed-duplicate"), true);
+  assert.equal(ids.includes("for-you-duplicate"), false);
+  assert.equal(ids.includes("followed-same-author-1"), true);
+  assert.equal(ids.includes("followed-same-author-2"), true);
+  assert.equal(
+    ranked.filter((post) => post.author_id === "shared-author").length,
+    3,
+  );
+  assert.equal(
+    ranked.filter(
+      (post) =>
+        post.author_id === "shared-author" &&
+        post.source_channel === "for_you",
+    ).length,
+    1,
+  );
+});
+
+test("an author-capped followed post does not reserve its text hash", () => {
+  const fallbackText =
+    "Teams keep rebuilding this manual AI approval workflow and need one reliable tool.";
+  const posts = [
+    ...Array.from({ length: 3 }, (_, index) => candidate({
+      id: `followed-kept-${index + 1}`,
+      author: "capped-followed-author",
+      views: 500_000 - index,
+      source_channel: "followed",
+    })),
+    candidate({
+      id: "followed-author-capped",
+      author: "capped-followed-author",
+      views: 19_000,
+      text: fallbackText,
+      source_channel: "followed",
+    }),
+    candidate({
+      id: "for-you-fallback",
+      author: "fallback-author",
+      views: 400_000,
+      text: fallbackText,
+      source_channel: "for_you",
+    }),
+  ];
+
+  const ranked = rankPosts(posts, {
+    now: NOW,
+    limit: posts.length,
+    maxPerAuthor: 3,
+    prioritySourceChannel: "followed",
+  });
+  const ids = ranked.map((post) => post.id);
+
+  assert.equal(ids.includes("followed-author-capped"), false);
+  assert.equal(ids.includes("for-you-fallback"), true);
 });
 
 test("calculates and selects opportunity signals deterministically", () => {

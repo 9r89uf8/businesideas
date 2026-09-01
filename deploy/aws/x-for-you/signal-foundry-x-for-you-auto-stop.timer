@@ -1,0 +1,10 @@
+[Unit]
+Description=Maximum boot lease for the Signal Foundry X For You worker
+
+[Timer]
+OnBootSec=25min
+AccuracySec=30s
+Unit=signal-foundry-x-for-you-auto-stop.service
+
+[Install]
+WantedBy=timers.target

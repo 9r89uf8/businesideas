@@ -3,6 +3,9 @@
 import { useState } from "react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
 
+const MAX_FOLLOWED_USERNAMES = 50;
+const MAX_CANDIDATES = 100;
+
 function fromLines(value) {
   return value
     .split("\n")
@@ -45,7 +48,11 @@ function parseFollowedUsernames(value) {
     usernames.push(username);
   }
 
-  return { usernames: usernames.slice(0, 12), invalid, tooMany: usernames.length > 12 };
+  return {
+    usernames: usernames.slice(0, MAX_FOLLOWED_USERNAMES),
+    invalid,
+    tooMany: usernames.length > MAX_FOLLOWED_USERNAMES,
+  };
 }
 
 function ListField({ label, hint, value, onChange }) {
@@ -93,7 +100,7 @@ export default function SettingsForm({ ownerId, initialSettings }) {
     if (
       !form.xQuery.trim() ||
       candidateLimit < 50 ||
-      candidateLimit > 200 ||
+      candidateLimit > MAX_CANDIDATES ||
       aiInputLimit < 25 ||
       aiInputLimit > 100 ||
       aiInputLimit > candidateLimit ||
@@ -105,7 +112,7 @@ export default function SettingsForm({ ownerId, initialSettings }) {
         message: followed.invalid.length
           ? "Each X username must be 1–15 letters, numbers, or underscores."
           : followed.tooMany
-            ? "Keep the followed-account list to 12 usernames or fewer."
+            ? `Keep the followed-account list to ${MAX_FOLLOWED_USERNAMES} usernames or fewer.`
             : "Check the query and input limits before saving.",
       });
       return;
@@ -158,7 +165,7 @@ export default function SettingsForm({ ownerId, initialSettings }) {
         <div className="mt-5 grid gap-4 rounded-2xl border border-[var(--moss)]/15 bg-[var(--moss)]/[0.035] p-4 sm:grid-cols-[minmax(0,1fr)_15rem] sm:items-start">
           <div>
             <label className="text-xs font-bold">
-              Followed X accounts <span className="font-normal text-[var(--ink-soft)]">one username per line · up to 12</span>
+              Followed X accounts <span className="font-normal text-[var(--ink-soft)]">one username per line · up to 50</span>
               <textarea
                 value={form.followedUsernames}
                 onChange={(event) => update("followedUsernames", event.target.value)}
@@ -171,17 +178,17 @@ export default function SettingsForm({ ownerId, initialSettings }) {
           </div>
           <div className="rounded-xl bg-white/75 p-4 text-xs leading-5 text-[var(--ink-soft)]">
             <p className="font-bold text-[var(--ink)]">Preferred, never forced</p>
-            <p className="mt-2">Every post must first reach 50K views, including posts from preferred accounts. Views, comments, likes, then saves rank the posts that qualify. Reposts and quotes do not affect quality. Preferred posts can fill at most half of the signal-model input; topic discovery fills the rest.</p>
+            <p className="mt-2">Every post must first reach 19K views, including posts from preferred accounts. Views, comments, likes, then saves rank the posts that qualify. Reposts and quotes do not affect quality. Preferred accounts are queried first and can fill the entire 100-post pool; topic discovery uses at most one fifth of otherwise unused capacity.</p>
           </div>
         </div>
 
         <div className="mt-5 grid gap-4 sm:grid-cols-2">
           <label className="text-xs font-bold">
-            Candidate limit <span className="font-normal text-[var(--ink-soft)]">50–200</span>
+            Candidate limit <span className="font-normal text-[var(--ink-soft)]">50–100</span>
             <input
               type="number"
               min="50"
-              max="200"
+              max="100"
               value={form.candidateLimit}
               onChange={(event) => update("candidateLimit", event.target.value)}
               className="focus-ring mt-2 w-full rounded-xl border border-[var(--line)] bg-white px-3.5 py-3 text-sm font-normal outline-none"

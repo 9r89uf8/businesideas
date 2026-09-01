@@ -26,49 +26,53 @@ test("the remote worker exposes exactly three authenticated tools", async () => 
 });
 
 test("submissions validate, hash, commit, and only then dispatch finalization", async () => {
-  const tools = await readFile(
-    new URL("../src/lib/mcp/tools.js", import.meta.url),
-    "utf8",
-  );
-  const submitRpc = tools.indexOf('.rpc("submit_research_result"');
-  const dispatch = tools.indexOf("await start(finalizeResearch", submitRpc);
+  const [tools, service] = await Promise.all([
+    readFile(new URL("../src/lib/mcp/tools.js", import.meta.url), "utf8"),
+    readFile(
+      new URL("../src/lib/research/job-service.js", import.meta.url),
+      "utf8",
+    ),
+  ]);
+  const submitRpc = service.indexOf('.rpc("submit_research_result"');
+  const dispatch = service.indexOf("await dispatchResearchFinalizer", submitRpc);
 
-  assert.match(tools, /validateResearchResultShape\(result\)/);
-  assert.match(tools, /hashResearchJson\(normalized\)/);
+  assert.match(service, /validateResearchResultShape\(result\)/);
+  assert.match(service, /hashResearchJson\(normalized\)/);
   assert.ok(submitRpc >= 0);
   assert.ok(dispatch > submitRpc);
-  assert.match(tools, /data\.newly_submitted \? "accepted" : "already_accepted"/);
-  assert.match(tools, /p_error_code: errorCode/);
+  assert.match(service, /data\.newly_submitted \? "accepted" : "already_accepted"/);
+  assert.match(service, /p_error_code: errorCode/);
+  assert.match(tools, /submitResearchResultAndDispatch/);
   assert.match(
-    tools,
+    service,
     /"research_unavailable"[\s\S]*"source_access_failed"[\s\S]*"submission_invalid"[\s\S]*"tool_error"/,
   );
 });
 
 test("the next queue check redrives a stranded durable submission", async () => {
-  const tools = await readFile(
-    new URL("../src/lib/mcp/tools.js", import.meta.url),
-    "utf8",
-  );
-  const recoveryQuery = tools.indexOf('.from("research_jobs")');
-  const claimRpc = tools.indexOf('.rpc("claim_pending_research_job"');
+  const [tools, service] = await Promise.all([
+    readFile(new URL("../src/lib/mcp/tools.js", import.meta.url), "utf8"),
+    readFile(
+      new URL("../src/lib/research/job-service.js", import.meta.url),
+      "utf8",
+    ),
+  ]);
+  const recoveryQuery = service.indexOf('.from("research_jobs")');
+  const claimRpc = service.indexOf('.rpc("claim_pending_research_job"');
 
   assert.ok(recoveryQuery >= 0);
   assert.ok(claimRpc > recoveryQuery);
-  assert.match(tools, /validationRedriveSeconds/);
+  assert.match(service, /validationRedriveSeconds/);
   assert.match(
-    tools,
-    /status\.eq\.submitted,and\(status\.eq\.validating,validation_started_at\.lt\./,
+    service,
+    /and\(status\.eq\.submitted,submitted_at\.lt\.[^)]*\),and\(status\.eq\.validating,validation_started_at\.lt\./,
   );
   assert.match(
-    tools,
-    /await start\(finalizeResearch, \[\{ jobId: stranded\.id, ownerId \}\]\)/,
+    service,
+    /await start\(finalizeResearch, \[\{ jobId, ownerId \}\]\)/,
   );
   assert.match(tools, /Pending research finalization was restarted/);
-  assert.match(
-    tools,
-    /data\.newly_submitted \|\| data\.research_status === "submitted"/,
-  );
+  assert.match(service, /persisted\.researchStatus === "submitted"/);
 });
 
 test("OAuth metadata and owner consent use the supported Supabase flow", async () => {

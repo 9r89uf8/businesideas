@@ -166,10 +166,10 @@ function runRecord(overrides = {}) {
 
 test("buildEffectiveSettings applies safe defaults and operating caps", () => {
   const defaults = buildEffectiveSettings(null);
-  assert.equal(defaults.candidate_limit, 200);
+  assert.equal(defaults.candidate_limit, 100);
   assert.equal(defaults.ai_input_limit, 100);
-  assert.equal(defaults.ranking_version, "views_v3");
-  assert.equal(defaults.minimum_views, 50_000);
+  assert.equal(defaults.ranking_version, "views_v4");
+  assert.equal(defaults.minimum_views, 19_000);
   assert.equal(defaults.research_window_hours, 72);
   assert.match(defaults.x_query, /lang:en -is:retweet -is:quote/);
   assert.deepEqual(defaults.followed_x_usernames, []);
@@ -195,7 +195,7 @@ test("buildEffectiveSettings applies safe defaults and operating caps", () => {
   });
 
   assert.equal(customized.x_query, "AI workaround lang:en");
-  assert.equal(customized.candidate_limit, 200);
+  assert.equal(customized.candidate_limit, 100);
   assert.equal(customized.ai_input_limit, 100);
   assert.deepEqual(customized.followed_x_usernames, [
     "openai",
@@ -208,6 +208,18 @@ test("buildEffectiveSettings applies safe defaults and operating caps", () => {
   ]);
   assert.ok(customized.preferences.avoid.length > 0);
   assert.deepEqual(customized.preferences.personal_advantages, ["automation"]);
+
+  const bounded = buildEffectiveSettings({
+    candidate_limit: 80,
+    ai_input_limit: 80,
+    followed_x_usernames: Array.from(
+      { length: 55 },
+      (_, index) => `account_${index}`,
+    ),
+  });
+  assert.equal(bounded.candidate_limit, 80);
+  assert.equal(bounded.ai_input_limit, 80);
+  assert.equal(bounded.followed_x_usernames.length, 50);
 });
 
 test("createRunKey is stable per UTC day and unique for manual runs", () => {
@@ -294,7 +306,7 @@ test("startRun reports a newly dispatched manual run explicitly", async () => {
     Date.parse(insertedRun.window_end) - Date.parse(insertedRun.window_start),
     72 * 60 * 60 * 1_000,
   );
-  assert.equal(insertedRun.settings_snapshot.minimum_views, 50_000);
+  assert.equal(insertedRun.settings_snapshot.minimum_views, 19_000);
   admin.assertExhausted();
 });
 

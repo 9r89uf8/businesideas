@@ -95,8 +95,8 @@ export const IDEA_HARD_FILTER_CHECKS = [
 ];
 
 export const POST_QUALITY = Object.freeze({
-  version: "views_v3",
-  minimumViews: 50_000,
+  version: "views_v4",
+  minimumViews: 19_000,
   ageExponent: 0.55,
   minimumAgeHours: 2,
   maximumAgeHours: 168,
@@ -112,15 +112,24 @@ export const PIPELINE = {
   models: {
     extraction: "gpt-5.6-luna",
     clustering: "gpt-5.6-terra",
+    research: "gpt-5.6-sol",
     embedding: "text-embedding-3-small",
   },
   reasoning: {
     extraction: "low",
     clustering: "medium",
+    research: "high",
   },
   research: {
     schemaVersion: 1,
     promptVersion: "scheduled_research_v1",
+    maxToolCalls: 20,
+    maxOutputTokens: 32_000,
+    searchContextSize: "medium",
+    pollInitialSeconds: 10,
+    pollMaximumSeconds: 30,
+    responseDeadlineSeconds: 1_800,
+    retryDelaySeconds: 900,
     maxSources: 40,
     maxSourcesPerIdea: 10,
     maxClaimsPerIdea: 12,
@@ -129,7 +138,7 @@ export const PIPELINE = {
     maxAttempts: 3,
     validationRedriveSeconds: 1800,
   },
-  maxCandidates: 200,
+  maxCandidates: 100,
   defaultAiInputLimit: 100,
   maxSignals: 70,
   maxClusters: 8,

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <body>
+    <nav>
+      <a data-testid="AppTabBar_Home_Link" href="/home">Home</a>
+      <a data-testid="AppTabBar_Profile_Link" href="/Collector_Acct">Profile</a>
+      <button data-testid="SideNav_AccountSwitcher_Button">Collector Display Name @Collector_Acct</button>
+    </nav>
+    <main>
+      <div data-testid="primaryColumn">
+        <div role="tablist">
+          <button role="tab" aria-selected="true">For you</button>
+          <button role="tab" aria-selected="false">Following</button>
+        </div>
+        <article data-testid="tweet">
+          <div data-testid="User-Name">Example Author @example</div>
+          <div data-testid="tweetText">A visible synthetic post.</div>
+          <a href="/example/status/101"><time datetime="2026-09-15T11:00:00Z">1h</time></a>
+        </article>
+      </div>
+    </main>
+  </body>
+</html>
