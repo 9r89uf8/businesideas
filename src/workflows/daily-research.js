@@ -2,13 +2,17 @@ import { createWebhook, sleep } from "workflow";
 import { PIPELINE } from "../lib/config.js";
 import { connectionObservationFromCloudResult } from "../lib/x/for-you-connection.js";
 import {
-  buildClusters,
-  extractSignals,
   fetchAndRank,
-  prepareResearchJob,
   recordWorkflowFailure,
   recordXForYouConnectionStatus,
 } from "./daily-research-steps.js";
+import {
+  filterCommercialPosts,
+  generateCandidateForPost,
+  hydrateNeededPostContext,
+  prepareCandidateResearchJob,
+  shortlistCommercialPosts,
+} from "./ideation-steps.js";
 import {
   cancelOpenAIResearchResponse,
   claimPreparedResearchJob,
@@ -206,38 +210,71 @@ export async function dailyResearch({ runId, ownerId }) {
     await recordWorkflowFailure({ runId, ownerId, message });
     throw new Error(message);
   }
-  if (rankedPostIds.length < 5) return { status: "no_ideas" };
+  if (!rankedPostIds.length) return { status: "no_ideas" };
 
-  let signalPostIds;
+  let filtered;
   try {
-    signalPostIds = await extractSignals({
+    filtered = await filterCommercialPosts({
       runId,
       ownerId,
       selectedPostIds: rankedPostIds,
     });
   } catch {
-    const message = "Signal extraction failed after retries.";
+    const message = "Commercial post filtering failed after retries.";
     await recordWorkflowFailure({ runId, ownerId, message });
     throw new Error(message);
   }
-  if (signalPostIds.length < 5) return { status: "no_ideas" };
+  if (!filtered.survivorPostIds.length) return { status: "no_ideas" };
 
-  let clusterIds;
+  let survivorPostIds;
   try {
-    clusterIds = await buildClusters({ runId, ownerId, signalPostIds });
+    survivorPostIds = await hydrateNeededPostContext({
+      runId,
+      ownerId,
+      survivorPostIds: filtered.survivorPostIds,
+      needsContextPostIds: filtered.needsContextPostIds,
+    });
   } catch {
-    const message = "Opportunity clustering failed after retries.";
+    const message = "Linked post context could not be hydrated after retries.";
     await recordWorkflowFailure({ runId, ownerId, message });
     throw new Error(message);
   }
-  if (!clusterIds.length) return { status: "no_ideas" };
+  if (!survivorPostIds.length) return { status: "no_ideas" };
+
+  let shortlist;
+  try {
+    shortlist = await shortlistCommercialPosts({
+      runId,
+      ownerId,
+      survivorPostIds,
+    });
+  } catch {
+    const message = "Commercial shortlisting failed after retries.";
+    await recordWorkflowFailure({ runId, ownerId, message });
+    throw new Error(message);
+  }
+  if (!shortlist.length) return { status: "no_ideas" };
+
+  // Each step makes a separate Responses request with only one post in its
+  // context. Workflow records successful steps independently, so a retry does
+  // not turn this into a shared model conversation.
+  await Promise.allSettled(
+    shortlist.map((item) =>
+      generateCandidateForPost({
+        runId,
+        ownerId,
+        clusterId: item.clusterId,
+        postId: item.postId,
+      }),
+    ),
+  );
 
   let jobId;
   try {
-    jobId = await prepareResearchJob({
+    jobId = await prepareCandidateResearchJob({
       runId,
       ownerId,
-      clusterIds,
+      clusterIds: shortlist.map((item) => item.clusterId),
     });
   } catch {
     const message = "Research job preparation failed after retries.";

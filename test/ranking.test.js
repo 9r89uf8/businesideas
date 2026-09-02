@@ -299,7 +299,7 @@ test("filters, deduplicates, ranks, and enforces three posts per author", () => 
     candidate({ id: "a-third", views: 80_000, position: 4 }),
     candidate({ id: "a-fourth", views: 70_000, position: 5 }),
     candidate({ id: "other", author: "author-b", views: 60_000, position: 6 }),
-    candidate({ id: "short", text: "Too short" }),
+    candidate({ id: "short", author: "short-author", text: "Too short" }),
     candidate({
       id: "repost",
       author: "author-c",
@@ -317,7 +317,7 @@ test("filters, deduplicates, ranks, and enforces three posts per author", () => 
 
   assert.equal(ids.includes("duplicate-low"), false);
   assert.equal(ids.includes("duplicate-high"), true);
-  assert.equal(ids.includes("short"), false);
+  assert.equal(ids.includes("short"), true);
   assert.equal(ids.includes("repost"), false);
   assert.equal(ids.includes("promotion"), false);
   assert.equal(ranked.filter((post) => post.author_id === "author-a").length, 3);

@@ -68,13 +68,23 @@ async function loadPublishedIdeaIds(db, runId, ownerId) {
 function payloadPostIds(payload) {
   return [
     ...new Set(
-      (payload?.clusters || []).flatMap((cluster) =>
-        (cluster?.evidence || [])
-          .map((source) => source?.post_id)
-          .filter((postId) => typeof postId === "string" && postId),
-      ),
+      (payload?.candidates || [])
+        .map((candidate) => candidate?.source_post?.post_id)
+        .filter((postId) => typeof postId === "string" && postId),
     ),
   ];
+}
+
+function payloadCandidatesById(payload) {
+  return new Map(
+    (payload?.candidates || [])
+      .filter(
+        (candidate) =>
+          typeof candidate?.candidate_id === "string" &&
+          candidate.candidate_id,
+      )
+      .map((candidate) => [candidate.candidate_id, candidate]),
+  );
 }
 
 async function loadResearchRunPosts(db, runId, ownerId, payload) {
@@ -188,6 +198,7 @@ export async function finalizeResearchResult({ jobId, ownerId }) {
   const runPostsById = new Map(
     runPosts.map((post) => [post.post_id, post]),
   );
+  const candidatesById = payloadCandidatesById(payload);
   const validated = validateResearchResult(result, payload, runPosts);
   const groundedCandidates = validated.ideas.filter(
     (idea) => idea.publishable,
@@ -257,8 +268,8 @@ export async function finalizeResearchResult({ jobId, ownerId }) {
 
   const counts = {
     ...(run.counts || {}),
-    eligible_clusters: payload.clusters.length,
-    research_candidates: groundedCandidates.length,
+    candidates_researched: payload.candidates.length,
+    candidates_validated: groundedCandidates.length,
     duplicates_removed: duplicatesRemoved,
     ideas_saved: accepted.length,
   };
@@ -286,11 +297,16 @@ export async function finalizeResearchResult({ jobId, ownerId }) {
   const xSourceRows = accepted.flatMap((idea) =>
     idea.source_post_ids.map((postId) => {
       const source = runPostsById.get(postId);
+      const candidate = candidatesById.get(idea.candidate_id);
       return {
         fingerprint_hash: idea.fingerprint_hash,
         post_id: postId,
         signal_type: source.signal_type,
-        evidence_summary: source.signal_summary || source.problem,
+        evidence_summary:
+          source.signal_summary ||
+          source.problem ||
+          candidate?.selected_idea?.problem_or_opportunity ||
+          candidate?.selected_idea?.product,
       };
     }),
   );

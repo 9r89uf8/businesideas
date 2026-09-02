@@ -2,8 +2,10 @@ import "server-only";
 
 import {
   X_EXPANSIONS,
+  X_MEDIA_FIELDS,
   X_POST_FIELDS,
   X_USER_FIELDS,
+  indexMedia,
   indexUsers,
   normalizeXPost,
   safeXErrorMetadata,
@@ -204,7 +206,10 @@ function readPagePosts(payload) {
   }
 
   const usersById = indexUsers(payload?.includes?.users);
-  return payload.data.map((post) => normalizeXPost(post, usersById));
+  const mediaByKey = indexMedia(payload?.includes?.media);
+  return payload.data.map((post) =>
+    normalizeXPost(post, usersById, mediaByKey),
+  );
 }
 
 /**
@@ -252,6 +257,7 @@ export async function searchRecentPosts({
       "tweet.fields": X_POST_FIELDS.join(","),
       expansions: X_EXPANSIONS.join(","),
       "user.fields": X_USER_FIELDS.join(","),
+      "media.fields": X_MEDIA_FIELDS.join(","),
     };
 
     if (nextToken) {

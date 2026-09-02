@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { researchResultSchema } from "../src/lib/ai-schemas/idea-generation.js";
+import { PIPELINE } from "../src/lib/config.js";
 import {
   RESEARCH_RESPONSE_LIMITS,
   assertResearchSourcesGrounded,
@@ -13,18 +14,18 @@ import {
 } from "../src/lib/openai/research-response.js";
 
 const JOB_ID = "00000000-0000-4000-8000-000000000021";
-const PROMPT_VERSION = "scheduled_research_v1";
+const PROMPT_VERSION = PIPELINE.research.promptVersion;
 const ACCESSED_AT = "2026-08-29T15:00:00.000Z";
 
 function jobPayload(overrides = {}) {
   return {
-    schema_version: 1,
+    schema_version: PIPELINE.research.schemaVersion,
     prompt_version: PROMPT_VERSION,
     run_id: "00000000-0000-4000-8000-000000000001",
     research_as_of: "2026-08-29T00:00:00.000Z",
     preferences: {},
     product_contract: {},
-    clusters: [],
+    candidates: [],
     historical_ideas: [],
     ...overrides,
   };
@@ -51,7 +52,7 @@ function completedResponse({ data, output = [], usage } = {}) {
     status: "completed",
     output_text: JSON.stringify(
       data ?? {
-        schema_version: 1,
+        schema_version: PIPELINE.research.schemaVersion,
         assessment: { overall_evidence: "insufficient", notes: "No idea." },
         sources: [],
         ideas: [],
@@ -243,7 +244,7 @@ test("extracts discovered URLs separately from opened and cited evidence", () =>
 
 test("parses grounded structured output and detailed usage", () => {
   const data = {
-    schema_version: 1,
+    schema_version: PIPELINE.research.schemaVersion,
     assessment: { overall_evidence: "strong", notes: "Grounded." },
     sources: [
       { source_id: "web-1", url: "https://example.com/opened#fragment" },
@@ -309,7 +310,7 @@ test("parses grounded structured output and detailed usage", () => {
 
 test("falls back to output message text and allows an empty researched result", () => {
   const data = {
-    schema_version: 1,
+    schema_version: PIPELINE.research.schemaVersion,
     assessment: { overall_evidence: "insufficient", notes: "No idea." },
     sources: [],
     ideas: [],
@@ -404,7 +405,7 @@ test("rejects nonterminal, refused, empty, and invalid JSON responses", () => {
       parseResearchResponse(
         completedResponse({
           data: {
-            schema_version: 1,
+            schema_version: PIPELINE.research.schemaVersion,
             assessment: { overall_evidence: "weak", notes: "No candidate." },
             sources: [
               {

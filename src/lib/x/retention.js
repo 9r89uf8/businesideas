@@ -40,6 +40,12 @@ function canonicalPostRow(post, ownerId, now, checked) {
     url: post.url,
     conversation_id: post.conversation_id,
     language: post.lang,
+    source_context:
+      post.source_context &&
+      typeof post.source_context === "object" &&
+      !Array.isArray(post.source_context)
+        ? post.source_context
+        : {},
     x_created_at: post.created_at,
     availability: "available",
     last_seen_at: now,
@@ -152,6 +158,7 @@ export async function applyEvidenceLookupResult({
       .update({
         availability: "unavailable",
         text: null,
+        source_context: {},
         last_checked_at: now,
       })
       .eq("owner_id", ownerId)
@@ -223,7 +230,7 @@ export async function purgeExpiredRawContent(db, ownerId, now) {
   for (const batch of chunks(ids)) {
     const { error } = await db
       .from("posts")
-      .update({ text: null })
+      .update({ text: null, source_context: {} })
       .eq("owner_id", ownerId)
       .in("x_post_id", batch);
     throwDatabaseError(error, "expiring raw X content");

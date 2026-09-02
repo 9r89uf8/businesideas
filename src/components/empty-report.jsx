@@ -18,8 +18,8 @@ export default function EmptyReport({ hasRun = false, failed = false }) {
         {failed
           ? "Review the run error above, then start a fresh run once the upstream issue is resolved."
           : hasRun
-            ? "That is a valid result: the system found no cluster strong enough to justify a commercial hypothesis today."
-            : "Start a manual run to fetch recent AI discussions, score their commercial signals, and build only the ideas that clear every evidence gate."}
+            ? "That is a valid result: no source post produced a distinct candidate strong enough to clear the evidence gates today."
+            : "Start a manual run to filter recent AI discussions, generate candidates independently, and validate only the strongest ideas."}
       </p>
     </section>
   );

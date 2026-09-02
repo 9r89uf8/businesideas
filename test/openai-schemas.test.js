@@ -83,7 +83,7 @@ test("cluster schema requires evidence and caps Terra output", () => {
   assert.ok(clusters.items.required.includes("evidence_post_ids"));
 });
 
-test("idea schema permits zero to five complete Sol candidates", () => {
+test("idea schema permits zero to three candidate-linked Sol results", () => {
   const ideas = ideaGenerationSchema.properties.ideas;
   const idea = ideas.items;
 
@@ -91,8 +91,10 @@ test("idea schema permits zero to five complete Sol candidates", () => {
   assert.equal(ideas.maxItems, PIPELINE.maxGeneratedCandidates);
   assert.equal(
     idea.properties.source_post_ids.minItems,
-    PIPELINE.minimumEvidencePosts,
+    1,
   );
+  assert.equal(idea.properties.source_post_ids.maxItems, 1);
+  assert.ok(idea.required.includes("candidate_id"));
   assert.ok(idea.required.includes("risks"));
   assert.ok(idea.required.includes("assumptions"));
   assert.ok(!Object.hasOwn(idea.properties, "confidence"));

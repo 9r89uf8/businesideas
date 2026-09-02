@@ -18,8 +18,10 @@ registerHooks({
 const {
   XApiError,
   X_EXPANSIONS,
+  X_MEDIA_FIELDS,
   X_POST_FIELDS,
   X_USER_FIELDS,
+  indexMedia,
   normalizeXPost,
   xRequest,
 } = await import("../src/lib/x/client.js");
@@ -210,6 +212,112 @@ test("X normalization preserves views and saves without inventing missing counts
   });
   assert.equal(missing.public_metrics.impression_count, null);
   assert.equal(missing.public_metrics.bookmark_count, null);
+});
+
+test("X normalization keeps bounded official link, long-post, article, and media context", () => {
+  const mediaByKey = indexMedia([
+    {
+      media_key: "3_111",
+      type: "photo",
+      alt_text: "Expanded photo description",
+    },
+    {
+      media_key: "13_222",
+      type: "video",
+      alt_text: "v".repeat(2_100),
+    },
+    {
+      media_key: "3_article",
+      type: "photo",
+      alt_text: "Article cover description",
+    },
+  ]);
+  const normalized = normalizeXPost(
+    {
+      id: "123",
+      author_id: "456",
+      text: "A short lead-in",
+      entities: {
+        urls: [
+          {
+            url: "https://t.co/release",
+            expanded_url: "https://example.com/release",
+            unwound_url: "https://example.com/releases/final",
+            title: " Product release ",
+            description: " Detailed release notes ",
+          },
+          { expanded_url: "javascript:alert(1)" },
+        ],
+      },
+      note_tweet: {
+        text: ` ${"n".repeat(12_100)} `,
+        entities: {
+          urls: [{ expanded_url: "https://example.com/long-post" }],
+        },
+      },
+      article: {
+        title: " Full article title ",
+        description: " Article summary ",
+        text: "Article body",
+        entities: {
+          urls: [{ expanded_url: "https://example.com/article-source" }],
+        },
+        cover_media_key: "3_article",
+      },
+      attachments: {
+        media_keys: ["3_111", "13_222", "invalid:key"],
+      },
+      media_metadata: [
+        { media_key: "3_111", alt_text: "Direct photo description" },
+      ],
+    },
+    new Map(),
+    mediaByKey,
+  );
+
+  assert.deepEqual(normalized.source_context.urls, [
+    {
+      url: "https://example.com/releases/final",
+      title: "Product release",
+      description: "Detailed release notes",
+    },
+  ]);
+  assert.equal(normalized.source_context.note_tweet.text.length, 12_000);
+  assert.deepEqual(normalized.source_context.note_tweet.urls, [
+    {
+      url: "https://example.com/long-post",
+      title: null,
+      description: null,
+    },
+  ]);
+  assert.deepEqual(normalized.source_context.article, {
+    title: "Full article title",
+    description: "Article summary",
+    text: "Article body",
+    urls: [
+      {
+        url: "https://example.com/article-source",
+        title: null,
+        description: null,
+      },
+    ],
+    media: [
+      {
+        media_key: "3_article",
+        type: "photo",
+        alt_text: "Article cover description",
+      },
+    ],
+  });
+  assert.equal(normalized.source_context.media.length, 2);
+  assert.deepEqual(normalized.source_context.media[0], {
+    media_key: "3_111",
+    type: "photo",
+    alt_text: "Direct photo description",
+  });
+  assert.equal(normalized.source_context.media[1].media_key, "13_222");
+  assert.equal(normalized.source_context.media[1].type, "video");
+  assert.equal(normalized.source_context.media[1].alt_text.length, 2_000);
 });
 
 test("followed usernames are safely normalized, deduplicated, capped, and batched", () => {
@@ -682,8 +790,26 @@ test("searchRecentPosts paginates within a hard 100-post cap and normalizes IDs"
     );
 
     return jsonResponse({
-      data: indexes.map(makePost),
-      includes: { users: indexes.map(makeUser) },
+      data: indexes.map((index) =>
+        index === 1
+          ? {
+              ...makePost(index),
+              attachments: { media_keys: ["3_search"] },
+            }
+          : makePost(index),
+      ),
+      includes: {
+        users: indexes.map(makeUser),
+        media: indexes.includes(1)
+          ? [
+              {
+                media_key: "3_search",
+                type: "photo",
+                alt_text: "Search result image",
+              },
+            ]
+          : [],
+      },
       meta: isSecondPage
         ? { result_count: 40 }
         : { result_count: 60, next_token: "next-page" },
@@ -709,6 +835,13 @@ test("searchRecentPosts paginates within a hard 100-post cap and normalizes IDs"
   assert.equal(typeof result.posts[0].conversation_id, "string");
   assert.equal(result.posts[0].author_username, "author_1");
   assert.equal(result.posts[0].url, "https://x.com/author_1/status/1001");
+  assert.deepEqual(result.posts[0].source_context.media, [
+    {
+      media_key: "3_search",
+      type: "photo",
+      alt_text: "Search result image",
+    },
+  ]);
   assert.deepEqual(result.posts[0].public_metrics, {
     impression_count: 51_000,
     reply_count: 3,
@@ -728,6 +861,7 @@ test("searchRecentPosts paginates within a hard 100-post cap and normalizes IDs"
   assert.equal(firstParams.get("tweet.fields"), X_POST_FIELDS.join(","));
   assert.equal(firstParams.get("expansions"), X_EXPANSIONS.join(","));
   assert.equal(firstParams.get("user.fields"), X_USER_FIELDS.join(","));
+  assert.equal(firstParams.get("media.fields"), X_MEDIA_FIELDS.join(","));
   assert.equal(firstParams.has("next_token"), false);
   assert.equal(calls[1].url.searchParams.get("next_token"), "next-page");
   assert.equal(calls[1].url.searchParams.get("max_results"), "40");
@@ -819,12 +953,34 @@ test("lookupPosts batches at 100 and reports omitted posts as unavailable", asyn
 
       assert.equal(url.pathname, "/2/tweets");
       assert.equal(url.searchParams.get("tweet.fields"), X_POST_FIELDS.join(","));
-      assert.equal(url.searchParams.get("expansions"), "author_id");
+      assert.equal(url.searchParams.get("expansions"), X_EXPANSIONS.join(","));
       assert.equal(url.searchParams.get("user.fields"), "username");
+      assert.equal(
+        url.searchParams.get("media.fields"),
+        X_MEDIA_FIELDS.join(","),
+      );
 
       return jsonResponse({
-        data: indexes.map(makePost),
-        includes: { users: indexes.map(makeUser) },
+        data: indexes.map((index) =>
+          index === 1
+            ? {
+                ...makePost(index),
+                attachments: { media_keys: ["3_lookup"] },
+              }
+            : makePost(index),
+        ),
+        includes: {
+          users: indexes.map(makeUser),
+          media: indexes.includes(1)
+            ? [
+                {
+                  media_key: "3_lookup",
+                  type: "photo",
+                  alt_text: "Lookup result image",
+                },
+              ]
+            : [],
+        },
         errors: containsMissing
           ? [
               {
@@ -856,6 +1012,13 @@ test("lookupPosts batches at 100 and reports omitted posts as unavailable", asyn
   ]);
   assert.equal(result.posts[0].id, "1001");
   assert.ok(result.posts.every((post) => typeof post.id === "string"));
+  assert.deepEqual(result.posts[0].source_context.media, [
+    {
+      media_key: "3_lookup",
+      type: "photo",
+      alt_text: "Lookup result image",
+    },
+  ]);
 });
 
 test("lookupPosts does not treat ambiguous omissions as unavailable", async () => {

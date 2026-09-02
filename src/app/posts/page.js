@@ -71,6 +71,7 @@ function PostCard({ snapshot, rankingVersion, minimumViews }) {
   const viewCount = Number(metrics.impression_count);
   const viewFloor = compactNumber(minimumViews);
   const belowViewFloor =
+    snapshot.source_channel !== "for_you" &&
     usesVersionedViewFloor &&
     (!Number.isFinite(viewCount) || viewCount < minimumViews);
 
@@ -82,7 +83,7 @@ function PostCard({ snapshot, rankingVersion, minimumViews }) {
         </span>
         {snapshot.selected_for_ai && (
           <span className="rounded-full bg-[var(--amber)]/20 px-2.5 py-1 text-[0.68rem] font-bold text-[#77521d]">
-            Sent to signal model
+            Sent to post filter
           </span>
         )}
         {belowViewFloor && (
@@ -90,12 +91,19 @@ function PostCard({ snapshot, rankingVersion, minimumViews }) {
             Below {viewFloor} floor · not eligible
           </span>
         )}
-        {snapshot.relevant === true && (
+        {(snapshot.filter_decision === "keep" ||
+          (!snapshot.filter_decision && snapshot.relevant === true)) && (
           <span className="rounded-full bg-[var(--moss)]/10 px-2.5 py-1 text-[0.68rem] font-bold text-[var(--moss)]">
-            Commercial signal
+            Kept for ideation
           </span>
         )}
-        {snapshot.relevant === false && (
+        {snapshot.filter_decision === "needs_context" && (
+          <span className="rounded-full bg-[var(--amber)]/20 px-2.5 py-1 text-[0.68rem] font-bold text-[#77521d]">
+            Needed linked context
+          </span>
+        )}
+        {(snapshot.filter_decision === "reject" ||
+          (!snapshot.filter_decision && snapshot.relevant === false)) && (
           <span className="rounded-full bg-[var(--rose)]/10 px-2.5 py-1 text-[0.68rem] font-bold text-[#88483f]">
             Screened out
           </span>
@@ -145,18 +153,20 @@ function PostCard({ snapshot, rankingVersion, minimumViews }) {
           ))}
         </dl>
 
-        {snapshot.selected_for_ai && snapshot.relevant !== null && (
+        {snapshot.selected_for_ai &&
+          (snapshot.filter_decision || snapshot.relevant !== null) && (
           <div className="mt-4 border-t border-[var(--line)] pt-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="eyebrow">Model signal</p>
-              {snapshot.signal_type && snapshot.signal_type !== "none" && (
+              <p className="eyebrow">Post filter</p>
+              {(snapshot.commercial_element || snapshot.signal_type) &&
+                (snapshot.commercial_element || snapshot.signal_type) !== "none" && (
                 <span className="font-mono text-[0.68rem] font-bold uppercase tracking-[0.08em] text-[var(--ink-soft)]">
-                  {snapshot.signal_type.replaceAll("_", " ")}
+                  {(snapshot.commercial_element || snapshot.signal_type).replaceAll("_", " ")}
                 </span>
               )}
             </div>
             <p className="mt-2 text-sm leading-6 text-[var(--ink-soft)]">
-              {snapshot.signal_summary || (snapshot.relevant ? "Relevant signal; no summary was stored." : "The model did not find a usable commercial signal.")}
+              {snapshot.filter_reason || snapshot.signal_summary || (snapshot.relevant ? "The post survived filtering." : "The post did not contain enough standalone commercial substance.")}
             </p>
             {snapshot.target_customer && (
               <p className="mt-2 text-xs leading-5">
@@ -199,7 +209,7 @@ export default async function PostsPage({ searchParams }) {
   if (selectedRun && !pageError) {
     let snapshotQuery = supabase
       .from("run_posts")
-      .select("post_id, search_position, metrics, deterministic_score, selected_for_ai, source_channel, relevant, signal_type, target_customer, signal_summary")
+      .select("post_id, search_position, metrics, deterministic_score, selected_for_ai, source_channel, relevant, signal_type, target_customer, signal_summary, filter_decision, filter_reason, commercial_element")
       .eq("owner_id", ownerId)
       .eq("run_id", selectedRun.id);
 
@@ -250,7 +260,7 @@ export default async function PostsPage({ searchParams }) {
           <p className="eyebrow">Source feed</p>
           <h1 className="mt-2 text-4xl font-semibold tracking-[-0.055em] sm:text-5xl">See what the research actually read.</h1>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--ink-soft)]">
-            Inspect stored X posts, view-first quality metrics, selection decisions, and model-added signals. New runs require at least {currentViewFloor} views; retrieved posts below that floor remain visible here only for auditing. Raw post text is retained for up to 30 days.
+            Inspect stored X posts, source context, and model decisions. When For You collection succeeds, the first 30 verified original posts enter the filter in feed order without a length or view threshold. The {currentViewFloor}-view floor applies only to the official-API fallback lanes. Raw post text is retained for up to 30 days.
           </p>
         </div>
         <Link href="/settings#x-sources" className="focus-ring rounded-xl bg-[var(--ink)] px-4 py-3 text-sm font-bold text-white">
@@ -279,8 +289,8 @@ export default async function PostsPage({ searchParams }) {
           Pipeline view
           <select name="view" defaultValue={view} className="focus-ring mt-1.5 w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2.5 text-sm font-normal outline-none">
             <option value="all">All retrieved (includes rejected)</option>
-            <option value="selected">Sent to signal model</option>
-            <option value="signals">Commercial signals</option>
+            <option value="selected">Sent to post filter</option>
+            <option value="signals">Filter survivors</option>
           </select>
         </label>
         <button className="focus-ring self-end rounded-xl bg-[var(--ink)] px-4 py-2.5 text-sm font-bold text-white">Filter</button>
@@ -310,7 +320,7 @@ export default async function PostsPage({ searchParams }) {
           </div>
           <div className="panel px-4 py-4">
             <p className="font-mono text-2xl font-semibold">{Number(counts.relevant_signals) || 0}</p>
-            <p className="mt-1 text-xs font-semibold text-[var(--ink-soft)]">Signals</p>
+            <p className="mt-1 text-xs font-semibold text-[var(--ink-soft)]">Filter survivors</p>
           </div>
         </section>
       )}

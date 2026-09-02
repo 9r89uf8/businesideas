@@ -157,7 +157,14 @@ export const researchResultSchema = {
             minimum: 1,
             maximum: PIPELINE.maxGeneratedCandidates,
           },
-          cluster_id: nonemptyString(64),
+          candidate_id: {
+            type: "string",
+            minLength: 1,
+            maxLength: 64,
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+            description:
+              "The exact candidate_id supplied in the immutable research payload.",
+          },
           title: nonemptyString(200),
           target_customer: nonemptyString(500),
           problem: nonemptyString(2_000),
@@ -189,12 +196,12 @@ export const researchResultSchema = {
             minimum: 0,
             maximum: 100,
             description:
-              "Strength of supplied X evidence only on the full 0-to-100 scale, never 0-to-10 or 0-to-1: 0 unsupported, 25 thin or ambiguous, 50 moderate, 75 strong multi-author support, and 100 exceptionally direct and consistent support. This is not model confidence, and external research must not increase it.",
+              "Strength of the candidate's one supplied X post only on the full 0-to-100 scale, never 0-to-10 or 0-to-1: 0 unsupported, 25 thin or ambiguous, 50 moderate but concrete commercial signal, 75 strong payer/value signal, and 100 exceptionally direct purchase or spending evidence. This is not model confidence, and external research must not increase it.",
           },
           source_post_ids: {
             type: "array",
-            minItems: PIPELINE.minimumEvidencePosts,
-            maxItems: 5,
+            minItems: 1,
+            maxItems: 1,
             uniqueItems: true,
             items: {
               type: "string",
@@ -232,7 +239,7 @@ export const researchResultSchema = {
         },
         required: [
           "rank",
-          "cluster_id",
+          "candidate_id",
           "title",
           "target_customer",
           "problem",

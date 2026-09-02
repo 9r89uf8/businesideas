@@ -20,7 +20,7 @@ const [workflow, steps, responseHelper, service, vercel] = await Promise.all([
 ]);
 
 test("daily workflow continues from the durable job into API research", () => {
-  const prepare = workflow.indexOf("await prepareResearchJob");
+  const prepare = workflow.indexOf("await prepareCandidateResearchJob");
   const claim = workflow.indexOf("await claimPreparedResearchJob", prepare);
   const create = workflow.indexOf("await startOpenAIResearchResponse", claim);
   const poll = workflow.indexOf("await pollOpenAIResearchResponse", create);

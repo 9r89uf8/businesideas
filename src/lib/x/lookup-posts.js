@@ -2,8 +2,10 @@ import "server-only";
 
 import {
   X_EXPANSIONS,
+  X_MEDIA_FIELDS,
   X_POST_FIELDS,
   X_USER_FIELDS,
+  indexMedia,
   indexUsers,
   normalizeXId,
   normalizeXPost,
@@ -87,8 +89,9 @@ function readLookupBatch(payload) {
   }
 
   const usersById = indexUsers(payload?.includes?.users);
+  const mediaByKey = indexMedia(payload?.includes?.media);
   const posts = (payload?.data ?? []).map((post) =>
-    normalizeXPost(post, usersById),
+    normalizeXPost(post, usersById, mediaByKey),
   );
 
   return {
@@ -137,6 +140,7 @@ export async function lookupPosts({
         "tweet.fields": X_POST_FIELDS.join(","),
         expansions: X_EXPANSIONS.join(","),
         "user.fields": X_USER_FIELDS.join(","),
+        "media.fields": X_MEDIA_FIELDS.join(","),
       },
       fetchImpl,
       signal,

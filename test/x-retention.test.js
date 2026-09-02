@@ -93,6 +93,18 @@ test("applyEvidenceLookupResult clears changed and unavailable excerpts but pres
           url: "https://x.com/one/status/101",
           conversation_id: "101",
           lang: "en",
+          source_context: {
+            urls: [
+              {
+                url: "https://example.com/release",
+                title: "Release",
+                description: null,
+              },
+            ],
+            note_tweet: null,
+            article: null,
+            media: [],
+          },
           created_at: "2026-08-26T13:00:00.000Z",
         },
         {
@@ -144,6 +156,19 @@ test("applyEvidenceLookupResult clears changed and unavailable excerpts but pres
     onConflict: "x_post_id",
     ignoreDuplicates: false,
   });
+  assert.deepEqual(postUpsert.rows[0].source_context, {
+    urls: [
+      {
+        url: "https://example.com/release",
+        title: "Release",
+        description: null,
+      },
+    ],
+    note_tweet: null,
+    article: null,
+    media: [],
+  });
+  assert.deepEqual(postUpsert.rows[1].source_context, {});
 
   const postUpdates = calls.filter(
     (call) => call.type === "update" && call.table === "posts",
@@ -152,6 +177,7 @@ test("applyEvidenceLookupResult clears changed and unavailable excerpts but pres
   assert.deepEqual(postUpdates[0].values, {
     availability: "unavailable",
     text: null,
+    source_context: {},
     last_checked_at: "2026-08-27T13:00:00.000Z",
   });
   assert.deepEqual(postUpdates[1].values, { availability: "unknown" });

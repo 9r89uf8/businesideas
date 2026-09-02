@@ -7,7 +7,7 @@ the job.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "assessment": {
     "overall_evidence": "insufficient | weak | moderate | strong",
     "notes": "Concise assessment of the supplied X evidence and research gaps"
@@ -22,6 +22,13 @@ five candidates. `sources` may contain at most 40 entries. The complete JSON
 result must be no larger than 1 MiB. `assessment.notes` may be empty and is
 limited to 4,000 characters. A nonempty `ideas` array requires
 `assessment.overall_evidence` to be `moderate` or `strong`.
+
+The claimed job's versioned payload contains a bounded `candidates` array.
+Every entry has a unique `candidate_id`, exactly one `source_post`, and one
+`selected_idea`. `source_post` contains the canonical `post_id`, author,
+timestamp, text, optional bounded context, and metrics. `selected_idea` is the
+business proposal to validate; it is not permission to brainstorm adjacent
+businesses.
 
 ## External source
 
@@ -60,17 +67,20 @@ Use only public HTTP or HTTPS URLs without credentials or fragments. Each
 source needs 1–20 unique supported claims, each at most 1,000 characters. Do
 not include page bodies, search dumps, hidden prompts, or copied articles.
 
-## Candidate
+## Validated candidate
 
-Each candidate preserves this exact product contract:
+Each result validates and may refine one supplied payload candidate. It must
+preserve that candidate's exact `candidate_id`; a worker may omit a weak
+candidate but must never put a replacement business under its ID. Each result
+preserves this exact product contract:
 
 ```json
 {
   "rank": 1,
-  "cluster_id": "UUID from the claimed payload",
+  "candidate_id": "Exact candidate_id from the claimed payload",
   "title": "Specific product title",
   "target_customer": "Specific paying customer",
-  "problem": "Recurring problem supported by the selected X cluster",
+  "problem": "Problem or opportunity supported by the candidate's source post",
   "offer": "Narrow self-serve website and outcome",
   "why_pay": "Why the customer would pay",
   "why_now": "Why the opportunity is timely",
@@ -109,7 +119,7 @@ Each candidate preserves this exact product contract:
   "risks": ["Material risk or uncertainty"],
   "assumptions": ["Inference that still needs validation"],
   "evidence_score": 75,
-  "source_post_ids": ["three to five IDs from this cluster"],
+  "source_post_ids": ["the candidate's exact source_post.post_id"],
   "research_source_ids": ["one to ten IDs from sources"],
   "claim_source_map": [
     {
@@ -125,8 +135,8 @@ Every hard check must honestly be true or the candidate must be omitted.
 `product_spec.delivery_mode` must be `self_serve_web_app`; the job's scalar
 delivery mode is authoritative. A candidate's `evidence_score` must meet
 `product_contract.minimum_x_evidence_score`.
-`source_post_ids` must contain three to five unique posts from the candidate's
-own `cluster_id` and represent at least three authors. Every
+`source_post_ids` must contain exactly one entry: the `post_id` from the
+matching payload candidate's `source_post`. Do not add related X posts. Every
 `research_source_id` must exist in `sources`, and every cited source must appear
 in at least one `claim_source_map` entry. Each mapped `claim` must exactly match
 one string in that source's `supported_claims` array. Every externally
@@ -140,5 +150,6 @@ speed to first revenue and each of core action, recurring trigger, and LATAM
 rationale 1,000; problem, offer, why-pay, why-now, differentiation, validation
 plan, and MVP scope 2,000. Use consecutive ranks beginning at one.
 
-The final website may reject candidates or publish only the strongest three.
-Do not compensate by weakening the result.
+Use each payload `candidate_id` at most once. The final website may reject
+candidates or publish only the strongest three. Do not compensate by weakening
+the result or inventing replacements.

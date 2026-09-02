@@ -11,12 +11,36 @@ export const X_POST_FIELDS = Object.freeze([
   "lang",
   "public_metrics",
   "referenced_tweets",
+  "entities",
+  "note_tweet",
+  "article",
+  "attachments",
+  "media_metadata",
 ]);
 
-export const X_EXPANSIONS = Object.freeze(["author_id"]);
+export const X_EXPANSIONS = Object.freeze([
+  "author_id",
+  "attachments.media_keys",
+  "article.cover_media",
+  "article.media_entities",
+]);
 export const X_USER_FIELDS = Object.freeze(["username"]);
+export const X_MEDIA_FIELDS = Object.freeze([
+  "media_key",
+  "type",
+  "alt_text",
+]);
 
 const SAFE_INTEGER_PATTERN = /^\d{1,19}$/;
+const SAFE_MEDIA_KEY_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const MEDIA_TYPES = new Set(["animated_gif", "photo", "video"]);
+const MAX_CONTEXT_URLS = 8;
+const MAX_CONTEXT_MEDIA = 8;
+const MAX_CONTEXT_URL_LENGTH = 2_048;
+const MAX_CONTEXT_TITLE_LENGTH = 500;
+const MAX_CONTEXT_DESCRIPTION_LENGTH = 2_000;
+const MAX_CONTEXT_TEXT_LENGTH = 12_000;
+const MAX_CONTEXT_ALT_TEXT_LENGTH = 2_000;
 
 /**
  * An error safe to surface in workflow logs. It deliberately excludes the
@@ -192,6 +216,225 @@ function normalizeMetric(value) {
   return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
+function boundedText(value, maximumLength) {
+  if (typeof value !== "string") return null;
+
+  const normalized = value.replaceAll("\0", "").trim();
+  return normalized ? normalized.slice(0, maximumLength) : null;
+}
+
+function normalizeContextUrl(value) {
+  if (typeof value !== "string") return null;
+  const candidate = value.replaceAll("\0", "").trim();
+  if (!candidate || candidate.length > MAX_CONTEXT_URL_LENGTH) return null;
+  if (/[\u0000-\u001f\u007f]/u.test(candidate)) return null;
+
+  try {
+    const url = new URL(candidate);
+    if (
+      !["http:", "https:"].includes(url.protocol) ||
+      url.username ||
+      url.password
+    ) {
+      return null;
+    }
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeUrlEntity(entity) {
+  if (!entity || typeof entity !== "object" || Array.isArray(entity)) {
+    return null;
+  }
+
+  const url = [entity.unwound_url, entity.expanded_url, entity.url]
+    .map(normalizeContextUrl)
+    .find(Boolean);
+  if (!url) return null;
+
+  return {
+    url,
+    title: boundedText(entity.title, MAX_CONTEXT_TITLE_LENGTH),
+    description: boundedText(
+      entity.description,
+      MAX_CONTEXT_DESCRIPTION_LENGTH,
+    ),
+  };
+}
+
+function normalizeContextUrls(entities) {
+  const byUrl = new Map();
+
+  for (const entity of Array.isArray(entities?.urls) ? entities.urls : []) {
+    const normalized = normalizeUrlEntity(entity);
+    if (!normalized) continue;
+
+    const existing = byUrl.get(normalized.url);
+    if (existing) {
+      existing.title ||= normalized.title;
+      existing.description ||= normalized.description;
+      continue;
+    }
+
+    byUrl.set(normalized.url, normalized);
+    if (byUrl.size >= MAX_CONTEXT_URLS) break;
+  }
+
+  return [...byUrl.values()];
+}
+
+function normalizeMediaKey(value) {
+  const key = typeof value === "string" ? value.trim() : "";
+  return SAFE_MEDIA_KEY_PATTERN.test(key) ? key : null;
+}
+
+function normalizedMediaRecord(media, mediaKey) {
+  return {
+    media_key: mediaKey,
+    type: MEDIA_TYPES.has(media?.type) ? media.type : null,
+    alt_text: boundedText(media?.alt_text, MAX_CONTEXT_ALT_TEXT_LENGTH),
+  };
+}
+
+export function indexMedia(mediaItems) {
+  const mediaByKey = new Map();
+
+  for (const media of Array.isArray(mediaItems) ? mediaItems : []) {
+    const mediaKey = normalizeMediaKey(media?.media_key);
+    if (!mediaKey) continue;
+
+    const normalized = normalizedMediaRecord(media, mediaKey);
+    const existing = mediaByKey.get(mediaKey);
+    if (!existing) {
+      mediaByKey.set(mediaKey, normalized);
+      continue;
+    }
+
+    existing.type ||= normalized.type;
+    existing.alt_text ||= normalized.alt_text;
+  }
+
+  return mediaByKey;
+}
+
+function collectMediaKeys(value, target) {
+  if (Array.isArray(value)) {
+    for (const item of value) collectMediaKeys(item, target);
+    return;
+  }
+
+  const directKey = normalizeMediaKey(value);
+  if (directKey) {
+    target.push(directKey);
+    return;
+  }
+
+  if (!value || typeof value !== "object") return;
+  const nestedKey = normalizeMediaKey(value.media_key);
+  if (nestedKey) target.push(nestedKey);
+}
+
+function indexPostMediaMetadata(mediaMetadata) {
+  const metadataByKey = new Map();
+
+  for (const metadata of Array.isArray(mediaMetadata) ? mediaMetadata : []) {
+    const mediaKey = normalizeMediaKey(metadata?.media_key);
+    if (!mediaKey) continue;
+    metadataByKey.set(mediaKey, normalizedMediaRecord(metadata, mediaKey));
+  }
+
+  return metadataByKey;
+}
+
+function normalizeMediaContext(mediaKeys, metadataByKey, mediaByKey) {
+  const normalized = [];
+  const seen = new Set();
+
+  for (const value of mediaKeys) {
+    const mediaKey = normalizeMediaKey(value);
+    if (!mediaKey || seen.has(mediaKey)) continue;
+    seen.add(mediaKey);
+
+    const expanded = mediaByKey.get(mediaKey);
+    const metadata = metadataByKey.get(mediaKey);
+    normalized.push({
+      media_key: mediaKey,
+      type: expanded?.type || metadata?.type || null,
+      alt_text: metadata?.alt_text || expanded?.alt_text || null,
+    });
+
+    if (normalized.length >= MAX_CONTEXT_MEDIA) break;
+  }
+
+  return normalized;
+}
+
+function normalizeNoteTweet(post) {
+  const note = post?.note_tweet ?? post?.note_post;
+  if (!note || typeof note !== "object" || Array.isArray(note)) return null;
+
+  const text = boundedText(note.text, MAX_CONTEXT_TEXT_LENGTH);
+  const urls = normalizeContextUrls(note.entities);
+  return text || urls.length ? { text, urls } : null;
+}
+
+function normalizeArticle(post, metadataByKey, mediaByKey) {
+  const article = post?.article;
+  const articleObject =
+    article && typeof article === "object" && !Array.isArray(article)
+      ? article
+      : {};
+  const suppliedTitle =
+    typeof post?.article_title === "string"
+      ? post.article_title
+      : post?.article_title?.text ?? post?.article_title?.title;
+  const title = boundedText(
+    articleObject.title ?? suppliedTitle,
+    MAX_CONTEXT_TITLE_LENGTH,
+  );
+  const description = boundedText(
+    articleObject.description ??
+      articleObject.preview_text ??
+      articleObject.summary,
+    MAX_CONTEXT_DESCRIPTION_LENGTH,
+  );
+  const text = boundedText(
+    articleObject.text ?? articleObject.plain_text,
+    MAX_CONTEXT_TEXT_LENGTH,
+  );
+  const urls = normalizeContextUrls(articleObject.entities);
+  const mediaKeys = [];
+  collectMediaKeys(articleObject.cover_media_key, mediaKeys);
+  collectMediaKeys(articleObject.cover_media, mediaKeys);
+  collectMediaKeys(articleObject.media_keys, mediaKeys);
+  collectMediaKeys(articleObject.media_entities, mediaKeys);
+  const media = normalizeMediaContext(mediaKeys, metadataByKey, mediaByKey);
+
+  return title || description || text || urls.length || media.length
+    ? { title, description, text, urls, media }
+    : null;
+}
+
+function normalizeSourceContext(post, mediaByKey) {
+  const metadataByKey = indexPostMediaMetadata(post?.media_metadata);
+  const attachmentKeys = [];
+  collectMediaKeys(post?.attachments?.media_keys, attachmentKeys);
+  for (const mediaKey of metadataByKey.keys()) attachmentKeys.push(mediaKey);
+
+  return {
+    urls: normalizeContextUrls(post?.entities),
+    note_tweet: normalizeNoteTweet(post),
+    article: normalizeArticle(post, metadataByKey, mediaByKey),
+    media: normalizeMediaContext(
+      attachmentKeys,
+      metadataByKey,
+      mediaByKey,
+    ),
+  };
+}
+
 export function indexUsers(users) {
   const usersById = new Map();
 
@@ -213,7 +456,11 @@ export function indexUsers(users) {
   return usersById;
 }
 
-export function normalizeXPost(post, usersById = new Map()) {
+export function normalizeXPost(
+  post,
+  usersById = new Map(),
+  mediaByKey = new Map(),
+) {
   const id = normalizeXId(post?.id, "X post ID");
   const authorId = normalizeXId(post?.author_id, "X author ID");
   const conversationId =
@@ -251,6 +498,7 @@ export function normalizeXPost(post, usersById = new Map()) {
     conversation_id: conversationId,
     lang: typeof post?.lang === "string" ? post.lang : null,
     referenced_tweets: referencedTweets,
+    source_context: normalizeSourceContext(post, mediaByKey),
     public_metrics: {
       impression_count: normalizeMetric(metrics.impression_count),
       reply_count: normalizeMetric(metrics.reply_count),

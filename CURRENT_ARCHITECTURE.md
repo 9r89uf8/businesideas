@@ -4,26 +4,29 @@ This document records the system implemented in this repository.
 
 It is a factual baseline, not a product roadmap.
 
-The application is a private, single-owner research desk. It finds unusually
-visible AI discussions on X, extracts commercial problems, groups related
-signals, gives one bounded research job to an API-backed research stage, and
-publishes zero to three evidence-backed website ideas after independent server
-validation.
+The application is a private, single-owner research desk. Its primary
+production input is the first 30 new, verified original posts from the owner's
+X `For you` feed. It filters those posts for concrete commercial inspiration,
+hydrates only ambiguous linked context, shortlists at most eight posts, creates
+one independently generated candidate per shortlisted post, and researches at
+most three deduplicated candidates before publishing zero to three ideas.
 
-Luna, Terra, Sol, and embeddings are OpenAI Platform calls made with server-only
-credentials. Final web research and candidate generation use `gpt-5.6-sol`
-with high reasoning, strict structured output, and bounded hosted web search.
+Luna, Sol, and embeddings are OpenAI Platform calls made with server-only
+credentials. Luna performs the cheap commercial filter and bounded context
+hydration. Sol performs shortlisting, isolated candidate generation, and final
+web research with strict structured output.
 
 There is one production path: the daily Vercel Workflow continues through
 research and publication. The repository retains a narrow MCP interface and
 Codex skill as an optional manual or future worker path, not as production
 scheduling infrastructure.
 
-There is also an optional, additive Playwright discovery lane for ordered post
-IDs from the authenticated X `For you` feed. The daily Vercel Workflow invokes
-one stopped EC2 worker only when the exact feature flag and approved-account
-gate is enabled. Official X lookup hydrates its IDs before they join ranking;
-the followed-account and topic-search lanes remain unchanged.
+The Playwright collector contributes only ordered X post IDs and feed
+positions. The daily Vercel Workflow invokes one stopped EC2 worker only when
+the exact feature flag and approved-account gate is enabled. Official X lookup
+verifies and hydrates those IDs, including bounded URL, long-post, article, and
+media-alt context. Official followed-account and topic recent search remains a
+configurable fallback path.
 
 ## 1. System at a glance
 
@@ -34,25 +37,31 @@ the followed-account and topic-search lanes remain unchanged.
         Create one owner-scoped run
                     |
                     v
-       Official X recent-search API       Optional For You lane
-      preferred accounts + topic query   webhook -> EC2/SSM -> <=100 IDs
-                    |                                |
-                    |                   official X lookup hydration
-                    |                                |
-                    +---------------+----------------+
-                    |
-                    v
-       19,000-view gate and ranking
-   views > comments > likes > bookmarks
-                    |
-                    v
-       Luna commercial-signal extraction
-                    |
-                    v
-          Terra problem clustering
-                    |
-                    v
- Build bounded, immutable research payload
+      For You lane                     Optional official search fallback
+ webhook -> EC2/SSM -> <=100 IDs       preferred accounts + topic query
+          |                                         |
+ official X verification                           ranking
+          |                                         |
+ first 30 new originals ----------------------------+
+          |
+          v
+ Luna commercial filter: keep / reject / needs_context
+          |
+          v
+ Luna hydrates only needs_context posts with bounded official
+ context and low-context hosted web search
+          |
+          v
+ Sol shortlist when more than 8 survive; maximum 8 posts
+          |
+          v
+ Independent Sol call per post: 3 concepts -> 0 or 1 candidate
+          |
+          v
+ Persist generation result -> exact/semantic dedup -> top 3
+          |
+          v
+ Build bounded, immutable candidate research payload
                     |
                     v
        Supabase research_jobs: pending
@@ -111,10 +120,12 @@ but it is not invoked by the daily production flow.
 | Responsibility | Provider or model |
 | --- | --- |
 | Recent social evidence | Official X API v2 |
-| Per-post signal extraction | `gpt-5.6-luna` |
-| Problem clustering | `gpt-5.6-terra` |
+| Commercial post filtering | `gpt-5.6-luna`, low reasoning |
+| Ambiguous linked-context hydration | `gpt-5.6-luna`, low reasoning, hosted web search |
+| Post shortlisting | `gpt-5.6-sol`, medium reasoning |
+| Isolated candidate generation | `gpt-5.6-sol`, high reasoning |
 | Fingerprint embeddings | `text-embedding-3-small` |
-| Final research and ideation | `gpt-5.6-sol`, high reasoning, Responses API |
+| Candidate research and refinement | `gpt-5.6-sol`, high reasoning, Responses API |
 | External research | OpenAI hosted `web_search` tool |
 
 ### Production research integration
@@ -205,7 +216,7 @@ They are responsible for:
 - optionally starting and stopping the For You EC2 worker, invoking it through
   SSM, accepting its one-use webhook result, and hydrating its post IDs through
   the official X lookup API;
-- calling Luna, Terra, Sol, hosted web search, and embeddings;
+- calling Luna and Sol, hosted web search, and embeddings;
 - constructing and hashing the research payload;
 - claiming the prepared research job through narrow database functions;
 - starting, polling, and cancelling bounded OpenAI background responses;
@@ -294,9 +305,9 @@ tool and returns one strict research-result object.
 
 It may:
 
-- read that job's compressed X evidence and product contract;
+- read at most three supplied candidates, each with one verified source post;
 - research public web sources;
-- draft zero to five schema-valid candidates.
+- refine or reject each supplied candidate.
 
 It may not:
 
@@ -321,7 +332,7 @@ Supabase Postgres is the source of truth for:
 
 - run state;
 - X post snapshots and analyses;
-- Terra clusters;
+- per-post filter, context, shortlist, and candidate-generation checkpoints;
 - immutable research-job payloads;
 - accepted research results;
 - published ideas and their evidence;
@@ -403,7 +414,7 @@ It contains the effective:
 - AI input limit;
 - preferred X usernames;
 - product preferences;
-- fixed 19,000 minimum-view policy;
+- the legacy official-search ranking policy;
 - fixed ranking policy version.
 
 The search interval is a rolling 72 hours. Its bounds are stored before the X
@@ -456,7 +467,9 @@ The persisted public metrics are:
 Repost and quote counts do not contribute to quality.
 
 The client does not retrieve threads, media bodies, biographies, follower
-histories, or full quoted-post bodies.
+histories, or full quoted-post bodies. Official lookup/search normalization does
+retain a bounded `source_context` object for URL entities, long-post metadata,
+article metadata, and attached-media alt text when X returns those fields.
 
 ### Partial results
 
@@ -514,18 +527,19 @@ already stored through any source lane. It then hydrates only unseen IDs through
 the existing official X lookup endpoint, requires the current run's exact
 72-hour window, and rejects unavailable posts, replies, reposts, and quote
 posts. The first 30 new originals in feed order are merged with
-`source_channel = 'for_you'`; originals below 19,000 views remain in the audit
-snapshot but are not rankable. Existing followed/topic records win same-run
-cross-channel ID duplicates. The preserved feed position becomes the existing
-`run_posts.search_position`, after which the unchanged ranking and
-Luna/Terra/Sol pipeline applies. Migration
-`005_for_you_source_channel.sql` extends the source-channel constraint.
+`source_channel = 'for_you'`. They are selected directly in feed order for the
+commercial filter; reach and text length do not gate this primary path.
+Existing followed/topic records win same-run cross-channel ID duplicates. The
+preserved feed position becomes `run_posts.search_position`. When no verified
+For You post is available and official API discovery is enabled, the existing
+quality-ranked hybrid selector remains the fallback.
 
-Official followed-account and topic recent search remains the default. Exact
-`X_API_DISCOVERY_ENABLED=false` replaces those discovery calls with an empty
-baseline while retaining official lookup hydration for the browser IDs. In this
-For You-only mode lookup, validation, or history-query failure fails the run;
-when API discovery is enabled the optional lane remains fail-open. The owner
+Official followed-account and topic recent search remains available as a
+fallback. Exact `X_API_DISCOVERY_ENABLED=false`, used by the current For
+You-only production configuration, replaces those discovery calls with an
+empty baseline while retaining official lookup hydration for the browser IDs.
+In this mode lookup, validation, or history-query failure fails the run; when
+API discovery is enabled the For You lane remains fail-open. The owner
 dashboard's existing authenticated run control is labeled **Collect For You &
 run research** and invokes this same workflow, so there is no second queue,
 route, or collection status model.
@@ -546,149 +560,65 @@ future session-expiry value. Authentication, account-mismatch, verification,
 and session-expiry codes map to `manual_login_required`; other failures remain
 `unknown`. This optional status write cannot fail the research run.
 
-## 7. X quality gate and ranking
+## 7. Primary selection and fallback ranking
 
-### Absolute reach requirement
+The primary path selects the first 30 verified For You originals in feed order.
+The commercial model, not reach or post length, decides whether they continue.
+Replies, reposts, quote posts, out-of-window posts, unavailable IDs, and posts
+already present in the owner's canonical history are removed before selection.
 
-Every rankable post must have at least:
+If that set is empty and official recent search is enabled, the legacy
+deterministic selector remains available. It requires 19,000 views, performs
+text and author cleanup, and ranks age-adjusted view, comment, like, and save
+percentiles at 65/20/10/5. This fallback does not override the For You feed.
 
-```text
-19,000 views
-```
+The `/posts` page exposes collected records, source lanes, metrics, selection,
+and analysis for owner inspection.
 
-Comments, likes, bookmarks, preferred-account status, and model judgment cannot
-waive this floor.
+## 8. Luna filtering and context hydration
 
-### Deterministic cleanup
+Luna first receives every selected post, up to 30, in one bounded structured
+request. It must return each post exactly once as `keep`, `reject`, or
+`needs_context`, with a reason and one commercial element: capability, problem,
+request, result, spending, change, or none. Decisions and usage are persisted
+on `run_posts` so a retry can recover the checkpoint.
 
-Before a post can reach Luna, deterministic code rejects:
+Only `needs_context` posts enter a second Luna request. The request includes at
+most five bounded sources derived from official X URL entities, long-post or
+article metadata, and media alt text, and it may use low-context hosted web
+search. A post continues only when context resolves to a supported commercial
+element. Unavailable context removes that post without blocking kept siblings.
 
-- text shorter than 40 characters;
-- empty normalized text;
-- reposts and quote posts recognized by query or reference indicators;
-- obvious repeated promotional text;
-- duplicate normalized text;
-- posts exceeding the per-author cap of three.
+## 9. Sol shortlist and isolated candidate generation
 
-Candidate snapshots that miss the 19,000-view floor can still be retained in
-`run_posts` for owner inspection, but they are not rankable or sent to Luna.
+If eight or fewer posts survive, all advance directly. If more than eight
+survive, one Sol request assesses every survivor and selects at most eight.
+Assessments and the chosen post-first units are stored before generation.
 
-### Age-adjusted metrics
+Each shortlisted post then receives its own Sol Responses request with only
+that post, its resolved context summary, and the run's product preferences.
+The model considers exactly three concepts and returns either one selected
+candidate or `no_viable_idea`. Calls run independently; each result and its
+usage are checkpointed before the workflow continues, so one failed call does
+not contaminate or erase successful siblings.
 
-Each quality metric is age-adjusted with a log signal. Post age is clamped
-between two and 168 hours and uses an age exponent of `0.55`.
+The existing `clusters` table is used as the persistence envelope for these
+single-post shortlist units. Its legacy Terra columns remain for compatibility;
+Terra clustering is not called by the production daily workflow.
 
-The signals are converted to within-pool percentile ranks. The deterministic
-score is:
+## 10. Candidate deduplication and research-job preparation
 
-```text
-0.65 * view percentile
-+ 0.20 * comment percentile
-+ 0.10 * like percentile
-+ 0.05 * save percentile
-```
+`prepareCandidateResearchJob()` reloads all generation checkpoints, orders
+valid candidates by their generation score, and fingerprints each candidate's
+payer, problem or opportunity, product, and pricing hypothesis. It removes:
 
-Views are therefore the main quality signal, followed by comments, likes, and
-bookmarks.
+- exact matches against prior published ideas;
+- semantic matches against prior ideas;
+- exact or semantic duplicates within the current candidate batch.
 
-Ties are resolved deterministically using the individual metric signals and
-post ID.
-
-### Inspection
-
-The `/posts` page lets the owner inspect collected posts, their source lane,
-metrics, selection status, and analysis. This is an audit surface for checking
-what the system is actually using.
-
-## 8. Luna signal extraction
-
-If fewer than five posts survive ranking and hybrid selection, the run ends as
-`no_ideas` without a model call.
-
-Otherwise Luna receives one bounded batch of selected posts and extracts:
-
-- relevance;
-- signal type;
-- target customer;
-- problem;
-- exact evidence excerpt;
-- concise summary;
-- commercial score;
-- hype score.
-
-Server validation requires returned post IDs to belong to the input and exact
-excerpts to occur in the original text.
-
-The combined opportunity score is:
-
-```text
-0.4 * deterministic quality
-+ 0.6 * commercial score
-- 0.3 * hype score
-```
-
-A signal is eligible for Terra only when:
-
-- Luna marks it relevant;
-- commercial score is at least 50;
-- hype score is at most 75.
-
-At most 70 signals continue.
-
-The `persist_luna_checkpoint` database function commits analysis, counters,
-usage, and the next stage together. A retry recovers the saved checkpoint
-instead of paying for the same extraction again.
-
-If fewer than five signals qualify, the run ends as `no_ideas`.
-
-## 9. Terra clustering
-
-Terra receives only validated commercial signals. It groups related posts into
-independently evidenced problem clusters.
-
-Each cluster records:
-
-- title;
-- target customer;
-- recurring problem;
-- why-now context;
-- summary;
-- supporting post IDs;
-- evidence strength;
-- payment signal;
-- eligibility.
-
-At most eight clusters are stored for a run.
-
-A cluster is useful to the final handoff only when its validated evidence can
-provide at least three exact excerpts from at least three independent authors.
-
-The `persist_terra_checkpoint` function atomically stores clusters, counts,
-usage, and the next stage. Later retries recover the saved eligible cluster IDs.
-
-If no eligible cluster remains, the run ends as `no_ideas`.
-
-## 10. Research-job preparation
-
-`prepareResearchJob()` is the boundary between local evidence processing and
-the research phase of the daily workflow.
-
-It performs trusted backend work before a research model or optional MCP worker
-is involved:
-
-1. Reload eligible Terra clusters.
-2. Reload current-run evidence records.
-3. Recheck the three-post and three-author minimum.
-4. Keep at most five evidence excerpts per cluster.
-5. Ensure the selected excerpts retain independent authors.
-6. Build normalized cluster fingerprints.
-7. Embed those fingerprints.
-8. Retrieve compact related historical ideas.
-9. Normalize owner preferences against the hard exclusions.
-10. Snapshot the complete product contract.
-11. Build the versioned JSON job payload.
-12. Canonically hash the payload with SHA-256.
-13. Persist the job and advance the run atomically.
+Trusted backend embeddings and the existing `0.90` semantic threshold remain
+authoritative. The first three accepted candidates are placed in the immutable
+research job; if none remain, the run completes as `no_ideas`.
 
 ### Bounded payload
 
@@ -701,21 +631,12 @@ run_id
 research_as_of
 preferences
 product_contract
-clusters
-historical_ideas
+candidates
 ```
 
-Each cluster contains only the selected evidence needed for research:
-
-- cluster ID and compressed problem fields;
-- evidence and payment scores;
-- three to five X post IDs;
-- author IDs and optional usernames;
-- X URLs and timestamps;
-- exact Luna evidence excerpts;
-- signal types;
-- views, comments, likes, and saves;
-- opportunity scores.
+Each candidate contains its candidate ID, one verified source post, the
+available bounded context, captured metrics, and the independently selected
+idea. The payload does not ask the research stage to invent unrelated concepts.
 
 The payload omits:
 
@@ -725,10 +646,6 @@ The payload omits:
 - credentials;
 - database internals;
 - arbitrary SQL access.
-
-Historical ideas are limited to 20 compact records containing title,
-fingerprint, status, and feedback reason. They are deduplication context, not
-evidence.
 
 Payload size is capped at one MiB.
 
@@ -823,7 +740,7 @@ durable application state.
 
 ### Research responsibilities
 
-For the supplied clusters, the research stage may investigate:
+For each supplied candidate, the research stage may investigate:
 
 - existing products and substitutes;
 - public pricing;
@@ -852,8 +769,9 @@ does not inflate the X-only evidence score.
 
 ### Product boundary
 
-The research stage may return zero to five candidates, strongest first. Zero is a valid
-result and is preferable to filler.
+The research stage may return zero to three refined candidates, at most one for
+each supplied `candidate_id`, strongest first. Zero is a valid result and is
+preferable to filler.
 
 Every candidate must be a specific, self-serve website that:
 
@@ -1129,14 +1047,14 @@ evidence that the hosted research tool observed the source.
 
 ### Candidate grounding
 
-Each candidate includes the full product contract, risks, assumptions, an
-X-only evidence score, X post IDs, external research source IDs, and a claim map.
+Each refined candidate includes the supplied `candidate_id`, the full product
+contract, risks, assumptions, an X-only evidence score, the exact source post,
+external research source IDs, and a claim map.
 
 The server requires:
 
-- one supplied cluster ID;
-- three to five unique X post IDs from that cluster;
-- at least three independent authors;
+- one supplied candidate ID, used at most once;
+- exactly the one X post ID attached to that candidate;
 - one to ten external sources;
 - every external source ID to exist in the same result;
 - every cited source to appear in a claim-map entry;
@@ -1171,8 +1089,8 @@ The finalizer:
 3. Recomputes both canonical SHA-256 hashes.
 4. Checks schema and prompt versions.
 5. Reloads only the X posts named by the payload.
-6. Validates candidate cluster and source membership.
-7. Rechecks author diversity, scores, product rules, and claim maps.
+6. Validates candidate ID and exact source-post membership.
+7. Rechecks scores, product rules, and claim maps.
 8. Drops individually unpublishable candidates.
 9. Recomputes normalized idea fingerprints.
 10. Embeds candidate fingerprints with `text-embedding-3-small`.
@@ -1227,7 +1145,7 @@ One row for the owner containing:
 
 - topic query;
 - up to 50 preferred X usernames;
-- candidate and Luna input limits;
+- candidate and model-input limits;
 - product preferences.
 
 ### `runs`
@@ -1249,6 +1167,7 @@ Run stages are:
 ```text
 fetching
 extracting
+shortlisting
 clustering
 generating
 research_queued
@@ -1264,17 +1183,20 @@ saving
 Canonical owner-scoped X records. X IDs remain strings.
 
 The table stores current text while retained, author identity, URL, creation
-time, availability, and refresh timestamps.
+time, availability, refresh timestamps, and bounded official `source_context`
+for URLs, long posts, articles, and media alt text.
 
 ### `run_posts`
 
 Per-run snapshots containing captured public metrics, discovery lane,
-deterministic ranking, Luna selection, and validated signal analysis.
+selection, Luna filter decision/reason/commercial element, hydrated context,
+and Sol shortlist assessment.
 
 ### `clusters`
 
-Terra-generated problem groups with evidence post IDs, evidence strength,
-payment signal, and eligibility.
+Run-scoped persistence envelopes. New production rows represent one shortlisted
+source post and store its independent `candidate_result` and `candidate_usage`.
+Legacy Terra fields and functions remain for historical compatibility.
 
 ### `research_jobs`
 
@@ -1324,7 +1246,7 @@ boundary. Each link stores the claims that source supports for that idea.
 queued / null
   -> running / fetching
   -> running / extracting
-  -> running / clustering
+  -> running / shortlisting
   -> running / generating
   -> running / research_queued
   -> running / researching
@@ -1369,9 +1291,10 @@ state recovery. An optional MCP client must also finish within the lease.
 
 ### Workflow retries
 
-Fetch, Luna, Terra, research-job preparation, response retrieval, result
-persistence, final validation, and failure recording use bounded Workflow step
-retries. The OpenAI response-start step deliberately has no Workflow retry; it
+Fetch, Luna filtering/context, Sol shortlisting/generation, research-job
+preparation, response retrieval, result persistence, final validation, and
+failure recording use bounded Workflow step retries. The OpenAI response-start
+step deliberately has no Workflow retry; it
 also has no SDK retry. Its `X-Client-Request-Id` value is for tracing, not
 idempotency.
 
@@ -1382,9 +1305,11 @@ the third failed or expired claim. The state-reconciliation loop is capped at
 
 Committed checkpoints make retries idempotent:
 
-- ranked posts are recovered from `run_posts`;
-- Luna analysis is recovered from `run_posts`;
-- Terra clusters are recovered from `clusters`;
+- selected posts are recovered from `run_posts`;
+- Luna filter/context and Sol shortlist assessments are recovered from
+  `run_posts`;
+- shortlist units and independently saved candidate results are recovered from
+  `clusters`;
 - the existing research job is recovered from `research_jobs`;
 - an active claim is revisited after its lease expires;
 - a completed generated result is retained across ambiguous persistence state;
@@ -1413,12 +1338,13 @@ an optional MCP invocation can use the same queue semantics.
 
 ## 18. Evidence retention
 
-Raw X post text and exact Luna excerpts are retained for 30 days.
+Raw X post text, official `source_context`, and legacy exact Luna excerpts are
+retained for 30 days.
 
 At the start of a fetch step, the application:
 
 - removes expired raw text;
-- clears expired exact excerpts;
+- clears expired source context and exact excerpts;
 - refreshes X posts still referenced by published ideas;
 - marks source availability as available, unavailable, or unknown;
 - invalidates an exact excerpt if the source text changed.
@@ -1506,20 +1432,18 @@ Private Supabase OAuth approval UI for the MCP client.
 | X recent-search maximum | 100 raw candidate records |
 | Preferred X usernames | 50 maximum |
 | Topic fallback with preferred accounts | At most 20% of unused capacity |
-| Minimum post views | 19,000 |
-| Maximum posts per author | 3 |
-| Ranking weights | views 65%, comments 20%, likes 10%, saves 5% |
-| Default Luna input | 100 posts |
-| Minimum posts before Luna | 5 |
-| Luna commercial minimum | 50/100 |
-| Luna hype maximum | 75/100 |
-| Maximum signals | 70 |
-| Maximum clusters | 8 |
-| Minimum X evidence | 3 posts from 3 authors |
-| Evidence sent per cluster | 3 to 5 posts |
-| Maximum historical ideas in job | 20 |
-| Research schema version | 1 |
-| Research prompt version | `scheduled_research_v1` |
+| Verified For You input | First 30 new originals in feed order |
+| Commercial filter | Luna, up to 30 posts |
+| Context hydration | Luna, only `needs_context` posts; at most 5 context sources each |
+| Maximum shortlisted posts | 8 |
+| Candidate generation | One isolated Sol request per shortlisted post; exactly 3 concepts considered |
+| Candidate result per post | 0 or 1 |
+| Candidates sent to research | At most 3 after exact and semantic deduplication |
+| Official-search fallback minimum views | 19,000 |
+| Official-search fallback posts per author | 3 maximum |
+| Official-search fallback ranking weights | views 65%, comments 20%, likes 10%, saves 5% |
+| Research schema version | 2 |
+| Research prompt version | `candidate_research_v2` |
 | Research model | `gpt-5.6-sol` |
 | Research reasoning | `high` |
 | Hosted web-search context | `medium` |
@@ -1534,7 +1458,7 @@ Private Supabase OAuth approval UI for the MCP client.
 | Failure retry delay | 15 minutes |
 | Maximum external sources | 40 |
 | External sources per idea | 1 to 10 |
-| Maximum research candidates | 5 |
+| Maximum researched candidates | 3 |
 | Minimum publishable evidence | 65/100 |
 | Published ideas | 0 to 3 |
 | MVP build window | 2 to 6 weeks |
@@ -1578,12 +1502,15 @@ Apply every file in `supabase/migrations` in filename order, including:
 003_scheduled_research_worker.sql
 004_account_first_x_collection.sql
 005_for_you_source_channel.sql
+006_post_first_ideation.sql
 ```
 
 Together these create the queue, external evidence tables, research RPCs, stage
 updates, RLS policies, and access-token hook function; clamp X collection to 100
 candidates; allow 50 preferred usernames; and permit the additive `for_you`
-source channel.
+source channel. Migration 006 adds official source context, post-first filter,
+context and shortlist checkpoints, isolated candidate results, and the v2
+candidate research envelope while preserving legacy rows.
 
 ### 2. Configure server-only production values
 
@@ -1605,9 +1532,10 @@ No research polling cron or ChatGPT/Codex scheduled task is part of production.
 ### 4. Perform one production end-to-end check
 
 1. Start a manual run.
-2. If its X and cluster evidence clears the gates, confirm it creates one
-   pending job and proceeds from `research_queued` to `researching` without
-   operator intervention.
+2. If its posts yield a candidate after filtering, context hydration,
+   shortlisting, generation, and deduplication, confirm it creates one pending
+   job and proceeds from `research_queued` to `researching` without operator
+   intervention.
 3. Confirm the job reaches `claimed`, `submitted`, `validating`, and
    `completed` within the same daily Workflow execution.
 4. Confirm the run ends as `completed` or `no_ideas`.
@@ -1952,17 +1880,18 @@ Useful run counters include:
   hydrated, rejected, and merged For You candidates;
 - the latest For You connection state, check time, successful verification
   time, and allowlisted error code in the existing run `counts` object;
-- records clearing the 19K view gate;
-- posts sent to Luna by lane;
-- relevant Luna signals;
-- clusters created and eligible;
+- posts selected for Luna by lane;
+- Luna keep, reject, and needs-context decisions;
+- context requests, resolutions, and unavailable results;
+- shortlist survivors and shortlisted posts;
+- generation attempts, candidates, no-viable results, and failed calls;
 - research jobs queued;
-- grounded research candidates;
-- duplicates removed;
+- candidates admitted to research and pre-research duplicates removed;
 - ideas saved;
 - partial X retrieval.
 
-Usage records cover Luna, Terra, accepted Sol research, and embedding calls. The
+Usage records cover Luna filtering/context, Sol shortlisting/generation and
+accepted research, plus embedding calls. The
 top-level `research` usage entry records model and response ID, input, cached,
 output, reasoning, and total tokens, plus completed web-search calls for the
 accepted result. Failed, invalid, cancelled, or abandoned response attempts may
@@ -2001,12 +1930,11 @@ seven-day validation plan identify what still needs real-world testing.
 - Optional MCP use still depends on OAuth authorization and the connected
   account's support for private write-capable tools. That limitation does not
   affect the production API path.
-- The optional For You collector contributes only ordered discovery IDs and
-  feed positions. AWS deployment and on-demand invocation support are
-  implemented, and the disabled stack described in the operator-setup section
-  is provisioned. The Workflow hydrates candidates through the official X API
-  before merging; DOM text and browser metrics never enter production ranking.
-  The existing followed/topic API lanes remain unchanged.
+- The For You collector contributes only ordered discovery IDs and feed
+  positions. AWS deployment and on-demand invocation support are implemented.
+  The Workflow hydrates candidates through the official X API before selecting
+  the first 30 new originals; DOM text and browser metrics never enter model
+  input. Followed/topic API discovery remains a configurable fallback.
 - X can change its login and Home DOM without notice. Locator drift, session
   expiry, verification, CAPTCHA, feed errors, and external navigation all end
   the bounded collector rather than trigger evasive behavior. This optional
@@ -2020,6 +1948,7 @@ These are current operating boundaries, not alternate execution paths.
 
 - [`src/workflows/daily-research.js`](./src/workflows/daily-research.js)
 - [`src/workflows/daily-research-steps.js`](./src/workflows/daily-research-steps.js)
+- [`src/workflows/ideation-steps.js`](./src/workflows/ideation-steps.js)
 - [`src/workflows/x-for-you-cloud-steps.js`](./src/workflows/x-for-you-cloud-steps.js)
 - [`src/workflows/openai-research-steps.js`](./src/workflows/openai-research-steps.js)
 - [`src/workflows/finalize-research.js`](./src/workflows/finalize-research.js)
@@ -2031,6 +1960,7 @@ These are current operating boundaries, not alternate execution paths.
 ### X and ranking
 
 - [`src/lib/x/search-posts.js`](./src/lib/x/search-posts.js)
+- [`src/lib/x/lookup-posts.js`](./src/lib/x/lookup-posts.js)
 - [`src/lib/x/client.js`](./src/lib/x/client.js)
 - [`src/lib/x/for-you-hydration.js`](./src/lib/x/for-you-hydration.js)
 - [`src/lib/x/for-you-result.js`](./src/lib/x/for-you-result.js)
@@ -2067,9 +1997,15 @@ These are current operating boundaries, not alternate execution paths.
 ### Models, contracts, and validation
 
 - [`src/lib/config.js`](./src/lib/config.js)
-- [`src/lib/prompts/extract-signals.js`](./src/lib/prompts/extract-signals.js)
-- [`src/lib/prompts/build-clusters.js`](./src/lib/prompts/build-clusters.js)
+- [`src/lib/prompts/post-filter.js`](./src/lib/prompts/post-filter.js)
+- [`src/lib/prompts/context-hydration.js`](./src/lib/prompts/context-hydration.js)
+- [`src/lib/prompts/post-shortlist.js`](./src/lib/prompts/post-shortlist.js)
+- [`src/lib/prompts/candidate-generation.js`](./src/lib/prompts/candidate-generation.js)
 - [`src/lib/prompts/generate-ideas.js`](./src/lib/prompts/generate-ideas.js)
+- [`src/lib/ai-schemas/post-filter.js`](./src/lib/ai-schemas/post-filter.js)
+- [`src/lib/ai-schemas/context-hydration.js`](./src/lib/ai-schemas/context-hydration.js)
+- [`src/lib/ai-schemas/post-shortlist.js`](./src/lib/ai-schemas/post-shortlist.js)
+- [`src/lib/ai-schemas/candidate-generation.js`](./src/lib/ai-schemas/candidate-generation.js)
 - [`src/lib/openai/research-response.js`](./src/lib/openai/research-response.js)
 - [`src/lib/ai-schemas/idea-generation.js`](./src/lib/ai-schemas/idea-generation.js)
 - [`src/lib/validation.js`](./src/lib/validation.js)
@@ -2102,6 +2038,7 @@ These are current operating boundaries, not alternate execution paths.
 - [`supabase/migrations/003_scheduled_research_worker.sql`](./supabase/migrations/003_scheduled_research_worker.sql)
 - [`supabase/migrations/004_account_first_x_collection.sql`](./supabase/migrations/004_account_first_x_collection.sql)
 - [`supabase/migrations/005_for_you_source_channel.sql`](./supabase/migrations/005_for_you_source_channel.sql)
+- [`supabase/migrations/006_post_first_ideation.sql`](./supabase/migrations/006_post_first_ideation.sql)
 - [`src/app/posts/page.js`](./src/app/posts/page.js)
 - [`src/app/ideas/[id]/page.js`](./src/app/ideas/[id]/page.js)
 - [`src/components/idea-detail.jsx`](./src/components/idea-detail.jsx)
@@ -2152,12 +2089,12 @@ button on the exact login URL: the collector enters the email, clicks the exact
 password once. It never reads, fills, or submits a six-digit verification code.
 
 The Vercel Workflow first excludes IDs already present in the owner's canonical
-posts. It hydrates unseen IDs through the existing official X lookup client,
-applies the date and reply/repost/quote rules, and writes at most the first 30
-new original feed posts as `source_channel = 'for_you'`. The 19,000-view quality
-floor controls ranking and downstream model input, not whether an accepted
-original appears in the audit snapshot. Migration
-`005_for_you_source_channel.sql` extends only the source-channel constraint.
+posts. It hydrates unseen IDs through the official X lookup client, applies the
+date and reply/repost/quote rules, and writes at most the first 30 new original
+feed posts as `source_channel = 'for_you'`. These verified posts are passed to
+the Luna commercial filter in feed order without a view or text-length gate.
+Official URL, long-post, article, and media-alt metadata is retained in bounded
+`source_context` for conditional hydration.
 When API discovery is enabled, browser, AWS, or For You hydration failure leaves
 the official search path running. In For You-only mode, browser/AWS failure or
 lookup/history-validation failure fails the run.

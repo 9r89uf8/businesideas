@@ -81,7 +81,7 @@ function idea(title, source_post_ids, rank) {
   };
 }
 
-test("bounded Sol evidence keeps five strongest posts while preserving three authors", () => {
+test("legacy cluster input becomes one candidate with one exact source post", () => {
   const bounded = boundIdeaGenerationClusters([cluster()]);
   const boundedIds = bounded[0].evidence.map((item) => item.post_id);
 
@@ -91,14 +91,10 @@ test("bounded Sol evidence keeps five strongest posts while preserving three aut
 
   const messages = buildGenerateIdeasPrompt({ clusters: bounded });
   const payload = JSON.parse(messages[1].content.split("\n")[1]);
-  assert.deepEqual(
-    payload.clusters[0].evidence.map((item) => item.post_id),
-    boundedIds,
-  );
-  assert.deepEqual(
-    payload.clusters[0].evidence.map((item) => item.author_id),
-    ["author-a", "author-a", "author-a", "author-b", "author-c"],
-  );
+  assert.equal(payload.candidates[0].candidate_id, "legacy-cluster-1");
+  assert.equal(payload.candidates[0].source_post.post_id, boundedIds[0]);
+  assert.equal(payload.candidates[0].source_post.author_id, "author-a");
+  assert.equal("clusters" in payload, false);
 });
 
 test("Sol validation accepts exactly the bounded prompt IDs and rejects omitted IDs", () => {

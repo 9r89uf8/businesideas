@@ -219,7 +219,7 @@ test("research queue and finalizer preserve the atomic hard-gate publication con
   assert.match(finalizerSource, /db\.rpc\(\s*"publish_run_researched_ideas"/);
   assert.match(finalizerSource, /product_spec: idea\.product_spec/);
   assert.match(finalizerSource, /hard_filter_checks: idea\.hard_filter_checks/);
-  assert.match(finalizerSource, /research_candidates: groundedCandidates\.length/);
+  assert.match(finalizerSource, /candidates_validated: groundedCandidates\.length/);
   assert.match(finalizerSource, /acceptedResearchIds/);
   assert.match(finalizerSource, /accepted\.length\s*\?\s*validated\.sources\.filter/);
 

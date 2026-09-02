@@ -2,7 +2,6 @@ import { PIPELINE, POST_QUALITY } from "./config.js";
 import { sha256Hex } from "./sha256.js";
 
 const MAX_POSTS_PER_AUTHOR = 3;
-const MINIMUM_POST_LENGTH = 40;
 
 const PROMOTIONAL_LANGUAGE =
   /\b(?:buy\s+now|sale|discount|limited\s+time|subscribe|sign\s+up|use\s+(?:my\s+)?code|link\s+in\s+bio|dm\s+me|free\s+trial|order\s+now)\b/i;
@@ -382,7 +381,6 @@ export function rankPosts(
     const normalizedText = normalizePostText(text);
 
     if (
-      [...text.trim()].length < MINIMUM_POST_LENGTH ||
       normalizedText.length === 0 ||
       isRepost(post) ||
       isQuotePost(post) ||

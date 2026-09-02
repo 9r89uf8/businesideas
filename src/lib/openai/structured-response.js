@@ -7,9 +7,19 @@ function normalizeTokenCount(value) {
 }
 
 export function normalizeResponseUsage(usage) {
+  const inputTokens = normalizeTokenCount(usage?.input_tokens);
+  const outputTokens = normalizeTokenCount(usage?.output_tokens);
   return {
-    input_tokens: normalizeTokenCount(usage?.input_tokens),
-    output_tokens: normalizeTokenCount(usage?.output_tokens),
+    input_tokens: inputTokens,
+    cached_input_tokens: normalizeTokenCount(
+      usage?.input_tokens_details?.cached_tokens,
+    ),
+    output_tokens: outputTokens,
+    reasoning_tokens: normalizeTokenCount(
+      usage?.output_tokens_details?.reasoning_tokens,
+    ),
+    total_tokens:
+      normalizeTokenCount(usage?.total_tokens) || inputTokens + outputTokens,
   };
 }
 
@@ -20,6 +30,9 @@ function assertStructuredRequest({
   schema,
   input,
   maxOutputTokens,
+  tools,
+  maxToolCalls,
+  promptCacheKey,
 }) {
   if (typeof model !== "string" || !model.trim()) {
     throw new TypeError("A model is required for a structured response.");
@@ -51,6 +64,25 @@ function assertStructuredRequest({
   ) {
     throw new TypeError("maxOutputTokens must be a positive integer.");
   }
+
+  if (tools !== undefined && (!Array.isArray(tools) || tools.length === 0)) {
+    throw new TypeError("tools must be a non-empty array when supplied.");
+  }
+
+  if (
+    maxToolCalls !== undefined &&
+    (!Number.isInteger(maxToolCalls) || maxToolCalls < 1)
+  ) {
+    throw new TypeError("maxToolCalls must be a positive integer.");
+  }
+
+  if (
+    promptCacheKey !== undefined &&
+    (typeof promptCacheKey !== "string" ||
+      !/^[A-Za-z0-9._:-]{1,64}$/.test(promptCacheKey))
+  ) {
+    throw new TypeError("promptCacheKey must be a bounded cache identifier.");
+  }
 }
 
 export async function callStructured({
@@ -60,6 +92,11 @@ export async function callStructured({
   schema,
   input,
   maxOutputTokens,
+  tools,
+  toolChoice,
+  maxToolCalls,
+  include,
+  promptCacheKey,
 }) {
   assertStructuredRequest({
     model,
@@ -68,6 +105,9 @@ export async function callStructured({
     schema,
     input,
     maxOutputTokens,
+    tools,
+    maxToolCalls,
+    promptCacheKey,
   });
 
   const request = {
@@ -89,6 +129,19 @@ export async function callStructured({
 
   if (maxOutputTokens !== undefined) {
     request.max_output_tokens = maxOutputTokens;
+  }
+  if (tools !== undefined) {
+    request.tools = tools;
+    request.tool_choice = toolChoice ?? "auto";
+  }
+  if (maxToolCalls !== undefined) {
+    request.max_tool_calls = maxToolCalls;
+  }
+  if (include !== undefined) {
+    request.include = include;
+  }
+  if (promptCacheKey !== undefined) {
+    request.prompt_cache_key = promptCacheKey;
   }
 
   const response = await createOpenAIClient().responses.create(request);

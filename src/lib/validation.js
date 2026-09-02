@@ -600,6 +600,9 @@ function validateLegacyIdeaResponse(
 
 const RESEARCH_SOURCE_TYPE_SET = new Set(RESEARCH_SOURCE_TYPES);
 const RESEARCH_SOURCE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+const RESEARCH_CANDIDATE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+const MAX_RESEARCH_CANDIDATES =
+  PIPELINE.maxResearchCandidates ?? PIPELINE.maxClusters;
 const PRODUCT_SPEC_KEYS = [
   "archetype",
   "core_action",
@@ -627,7 +630,7 @@ const RESEARCH_SOURCE_KEYS = [
 ];
 const RESEARCH_IDEA_KEYS = [
   "rank",
-  "cluster_id",
+  "candidate_id",
   ...REQUIRED_IDEA_FIELDS,
   "product_spec",
   "hard_filter_checks",
@@ -690,8 +693,7 @@ function normalizeResearchSourceIds(values, { minimum = 1 } = {}) {
 function normalizeResearchPostIds(values) {
   if (
     !Array.isArray(values) ||
-    values.length < PIPELINE.minimumEvidencePosts ||
-    values.length > 5
+    values.length !== 1
   ) {
     return null;
   }
@@ -699,6 +701,7 @@ function normalizeResearchPostIds(values) {
     typeof value === "string" ? value.trim() : "",
   );
   if (
+    normalized.some((value, index) => value !== values[index]) ||
     normalized.some((value) => !/^\d{1,32}$/.test(value)) ||
     new Set(normalized).size !== normalized.length
   ) {
@@ -807,7 +810,7 @@ function normalizeStrictResearchIdea(idea) {
       ),
     ]),
   );
-  const clusterId = boundedString(idea.cluster_id, 64);
+  const candidateId = boundedString(idea.candidate_id, 64);
   const risks = boundedStringArray(idea.risks, {
     minimum: 1,
     maximum: 5,
@@ -826,7 +829,9 @@ function normalizeStrictResearchIdea(idea) {
 
   if (
     Object.values(fields).some((value) => value === null) ||
-    !clusterId ||
+    !candidateId ||
+    idea.candidate_id !== candidateId ||
+    !RESEARCH_CANDIDATE_ID_PATTERN.test(candidateId) ||
     !risks ||
     !assumptions ||
     sourcePostIds === null ||
@@ -846,7 +851,7 @@ function normalizeStrictResearchIdea(idea) {
   return {
     ...idea,
     ...fields,
-    cluster_id: clusterId,
+    candidate_id: candidateId,
     risks,
     assumptions,
     product_spec: cleanProductSpec(idea.product_spec),
@@ -917,6 +922,10 @@ export function validateResearchResultShape(response) {
   if (sortedRanks.some((rank, index) => rank !== index + 1)) {
     throw new TypeError("Research result idea ranks must be consecutive from one.");
   }
+  const candidateIds = ideas.map((idea) => idea.candidate_id);
+  if (new Set(candidateIds).size !== candidateIds.length) {
+    throw new TypeError("Research result candidate IDs must be unique.");
+  }
 
   return {
     schema_version: response.schema_version,
@@ -929,39 +938,43 @@ export function validateResearchResultShape(response) {
   };
 }
 
-function createResearchClusterMap(payload) {
+function createResearchCandidateMap(payload) {
   if (
     !payload ||
     typeof payload !== "object" ||
     payload.schema_version !== PIPELINE.research.schemaVersion ||
     payload.prompt_version !== PIPELINE.research.promptVersion ||
-    !Array.isArray(payload.clusters) ||
-    payload.clusters.length < 1 ||
-    payload.clusters.length > PIPELINE.maxClusters
+    !Array.isArray(payload.candidates) ||
+    payload.candidates.length < 1 ||
+    payload.candidates.length > MAX_RESEARCH_CANDIDATES
   ) {
     throw new TypeError("Research job payload is invalid or unsupported.");
   }
 
-  const clusters = new Map();
-  for (const cluster of payload.clusters) {
-    const clusterId = boundedString(cluster?.cluster_id, 64);
-    if (!clusterId || clusters.has(clusterId) || !Array.isArray(cluster.evidence)) {
-      throw new TypeError("Research job contains an invalid cluster.");
+  const candidates = new Map();
+  const sourcePostIds = new Set();
+  for (const candidate of payload.candidates) {
+    const candidateId = boundedString(candidate?.candidate_id, 64);
+    const sourcePostId = recordId(candidate?.source_post);
+    if (
+      !candidateId ||
+      candidate.candidate_id !== candidateId ||
+      !RESEARCH_CANDIDATE_ID_PATTERN.test(candidateId) ||
+      candidates.has(candidateId) ||
+      !sourcePostId ||
+      candidate.source_post.post_id !== sourcePostId ||
+      !/^\d{1,32}$/.test(sourcePostId) ||
+      sourcePostIds.has(sourcePostId) ||
+      !candidate?.selected_idea ||
+      typeof candidate.selected_idea !== "object" ||
+      Array.isArray(candidate.selected_idea)
+    ) {
+      throw new TypeError("Research job contains an invalid candidate.");
     }
-    const sourceIds = new Set();
-    for (const evidence of cluster.evidence) {
-      const postId = recordId(evidence);
-      if (!postId || sourceIds.has(postId)) {
-        throw new TypeError("Research job contains invalid cluster evidence.");
-      }
-      sourceIds.add(postId);
-    }
-    if (sourceIds.size < PIPELINE.minimumEvidencePosts) {
-      throw new TypeError("Research job contains insufficient cluster evidence.");
-    }
-    clusters.set(clusterId, { cluster, sourceIds });
+    sourcePostIds.add(sourcePostId);
+    candidates.set(candidateId, { candidate, sourcePostId });
   }
-  return clusters;
+  return candidates;
 }
 
 /**
@@ -973,14 +986,12 @@ export function validateResearchResult(
   jobPayload,
   runPosts,
   {
-    minimumEvidencePosts = PIPELINE.minimumEvidencePosts,
-    minimumEvidenceAuthors = PIPELINE.minimumEvidenceAuthors,
     maxGeneratedCandidates = PIPELINE.maxGeneratedCandidates,
     maxPublishedIdeas = PIPELINE.maxPublishedIdeas,
   } = {},
 ) {
   const normalized = validateResearchResultShape(response);
-  const clustersById = createResearchClusterMap(jobPayload);
+  const candidatesById = createResearchCandidateMap(jobPayload);
   const postsById = createRecordMap(runPosts, "runPosts");
   const researchSourcesById = new Map(
     normalized.sources.map((source) => [source.source_id, source]),
@@ -988,14 +999,14 @@ export function validateResearchResult(
   const ideas = [];
 
   for (const idea of normalized.ideas) {
-    const cluster = clustersById.get(idea.cluster_id);
-    if (!cluster) {
+    const candidate = candidatesById.get(idea.candidate_id);
+    if (!candidate) {
       continue;
     }
     if (
-      idea.source_post_ids.some(
-        (postId) => !cluster.sourceIds.has(postId) || !postsById.has(postId),
-      )
+      idea.source_post_ids.length !== 1 ||
+      idea.source_post_ids[0] !== candidate.sourcePostId ||
+      !postsById.has(candidate.sourcePostId)
     ) {
       continue;
     }
@@ -1032,16 +1043,13 @@ export function validateResearchResult(
       continue;
     }
 
-    const independentAuthorCount = new Set(
-      idea.source_post_ids
-        .map((postId) => authorId(postsById.get(postId)))
-        .filter(Boolean),
-    ).size;
+    const independentAuthorCount = authorId(
+      postsById.get(candidate.sourcePostId),
+    )
+      ? 1
+      : 0;
     const validationErrors = [];
-    if (idea.source_post_ids.length < minimumEvidencePosts) {
-      validationErrors.push("insufficient_posts");
-    }
-    if (independentAuthorCount < minimumEvidenceAuthors) {
+    if (independentAuthorCount !== 1) {
       validationErrors.push("insufficient_authors");
     }
     if (!PUBLISHABLE_OVERALL_EVIDENCE.has(normalized.assessment.overall_evidence)) {

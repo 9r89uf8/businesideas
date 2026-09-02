@@ -8,22 +8,25 @@ The implemented system is documented in
 
 ## Current flow
 
-1. A daily Vercel cron or owner-triggered run searches a fixed 72-hour X window.
-2. Up to 50 preferred accounts fill a 100-post collection budget first. Topic
-   discovery can use at most 20% of unused capacity. Both sources feed the same
-   19,000-view quality gate; retweets and quote posts are excluded.
-3. Qualifying posts are ranked by views, comments, likes, then bookmarks.
-4. Luna extracts per-post commercial signals.
-5. Terra groups strong signals into independently evidenced problems.
-6. Vercel writes one bounded, immutable job to `research_jobs` and claims it in
-   the same durable workflow.
-7. A bounded GPT-5.6 Sol Responses API call researches live public-web evidence
-   and returns zero to five structured candidates. Every submitted source must
-   match a page the web-search tool opened or cited.
-8. The workflow saves the result before validation, recomputes fingerprints and
-   embeddings, removes duplicates, and atomically publishes zero to three ideas.
+1. A daily Vercel cron or owner-triggered run collects ordered IDs from the
+   approved X `For you` feed and verifies them through the official X API.
+2. The first 30 new original posts enter Luna's commercial filter in feed order,
+   without a view or text-length gate.
+3. Luna keeps, rejects, or requests context for each post. Only ambiguous posts
+   receive bounded official context plus low-context web-search hydration.
+4. If more than eight posts survive, Sol shortlists at most eight; otherwise all
+   survivors advance.
+5. Each shortlisted post gets an independent Sol call that considers three
+   concepts and returns zero or one candidate. Results are persisted separately.
+6. Exact and semantic deduplication removes repeats, then the strongest three
+   candidates are written to one immutable `research_jobs` payload.
+7. A bounded Sol Responses API call researches live public-web evidence and may
+   refine or reject each candidate. Every submitted source must match a page the
+   web-search tool opened or cited.
+8. The workflow saves the result before final validation, rechecks duplicates,
+   and atomically publishes zero to three ideas.
 
-Luna, Terra, Sol, web search, and embeddings use the OpenAI Platform API. The
+Luna, Sol, web search, and embeddings use the OpenAI Platform API. The
 final model never writes directly to ideas; it can only return a bounded result
 that passes the queue, source-grounding, product, evidence, and duplicate gates.
 
@@ -37,7 +40,7 @@ that passes the queue, source-grounding, product, evidence, and duplicate gates.
 - Optional isolated Playwright Core collector for the authenticated X `For
   you` feed; intended for on-demand AWS EC2 execution with local development
   support
-- OpenAI Luna, Terra, Sol, web search, and embeddings
+- OpenAI Luna, Sol, web search, and embeddings
 - Optional MCP over HTTP with Supabase OAuth 2.1 for manual or future workers
 
 ## Local setup
@@ -93,8 +96,10 @@ browser-discovered IDs. When the optional lane is enabled, the same daily
 Vercel Workflow invokes one stopped, SSM-managed EC2 worker and receives at most
 100 ordered post IDs. The app removes IDs already stored for the owner, rejects
 replies, reposts, and quote posts using the official lookup metadata, and keeps
-the first 30 new original posts in feed order. Posts below 19,000 views remain
-visible in the audit data but do not enter ranking, Luna, Terra, or Sol.
+the first 30 new original posts in feed order. Those verified posts enter Luna's
+commercial filter regardless of views or text length. The official
+followed/topic ranker remains available when API discovery is enabled and the
+For You set is empty.
 
 [X's current automation rules](https://help.x.com/en/rules-and-policies/x-automation)
 prohibit scripting the X website and warn that it may result in account
@@ -347,8 +352,8 @@ removes a stale lock automatically.
 Local JSONL rows remain diagnostics/discovery records. Production uses only the
 bounded post IDs and feed positions returned to the one-use Workflow webhook.
 Official X lookup supplies authoritative author IDs, timestamps,
-reply/repost/quote references, and public metrics before a For You candidate can
-be stored or ranked.
+reply/repost/quote references, public metrics, and bounded URL/article/media
+context before a For You candidate can be stored or selected.
 
 ## Verification
 
@@ -366,6 +371,7 @@ that duplicates and non-original posts do not consume the 30-post result. The
 app excludes owner posts already stored, hydrates only unseen IDs through the
 official X lookup API, rejects replies, reposts, and quotes, and persists the
 first 30 new originals as `source_channel = 'for_you'`.
+Those posts then enter the post-first Luna/Sol pipeline described above.
 
 ```text
 X_WEB_AUTOMATION_ENABLED=true
@@ -392,8 +398,8 @@ Vercel or returned by the collector. A successful callback contains only post
 IDs and feed positions; a failed callback contains only a bounded safe error
 code.
 
-Apply
-[`005_for_you_source_channel.sql`](./supabase/migrations/005_for_you_source_channel.sql)
+Apply every migration through
+[`006_post_first_ideation.sql`](./supabase/migrations/006_post_first_ideation.sql)
 before enabling the values. Browser access always fails closed. Hydration fails
 open only while API discovery is enabled and an official search result exists;
 in For You-only mode it fails the run instead of reporting an empty successful
@@ -403,7 +409,7 @@ collection.
 
 [`vercel.json`](./vercel.json) invokes `/api/cron/daily` at 13:00 UTC. Add the
 required environment variables to Vercel and deploy the version containing
-migrations through `005_for_you_source_channel.sql` and the MCP routes.
+migrations through `006_post_first_ideation.sql` and the MCP routes.
 
 The daily Vercel Workflow now performs final API research itself. It makes one
 non-retried background Responses API creation attempt per database claim, polls

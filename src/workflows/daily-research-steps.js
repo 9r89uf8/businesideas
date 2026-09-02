@@ -192,6 +192,7 @@ export async function fetchAndRank({
   if (
     [
       "extracting",
+      "shortlisting",
       "clustering",
       "generating",
       "research_queued",
@@ -199,7 +200,7 @@ export async function fetchAndRank({
       "validating",
       "saving",
     ].includes(run.stage) &&
-    Number(run.counts?.sent_to_luna) >= 5
+    Number(run.counts?.sent_to_luna) >= 1
   ) {
     const { data, error } = await db
       .from("run_posts")
@@ -207,9 +208,9 @@ export async function fetchAndRank({
       .eq("run_id", runId)
       .eq("owner_id", ownerId)
       .eq("selected_for_ai", true)
-      .order("deterministic_score", { ascending: false });
+      .order("search_position", { ascending: true });
     throwDatabaseError(error, "recovering the ranked-post checkpoint");
-    if ((data || []).length >= 5) return data.map((post) => post.post_id);
+    if ((data || []).length >= 1) return data.map((post) => post.post_id);
   }
   const now = new Date().toISOString();
 
@@ -314,9 +315,34 @@ export async function fetchAndRank({
     limit: searchResult.rankablePosts.length,
     prioritySourceChannel: "followed",
   });
-  const selected = selectHybridAiInput(ranked, {
-    limit: run.settings_snapshot.ai_input_limit,
-  });
+  const verifiedForYou = posts
+    .filter(
+      (post) =>
+        post.source_channel === "for_you" &&
+        typeof post.text === "string" &&
+        post.text.trim(),
+    )
+    .sort(
+      (left, right) =>
+        Number(left.search_position) - Number(right.search_position) ||
+        left.id.localeCompare(right.id),
+    )
+    .slice(0, PIPELINE.maxForYouInput)
+    .map((post, index, values) => ({
+      ...post,
+      // Feed order is only an audit/tie-break signal. The model filter, not
+      // post length or reach, decides whether the post is commercially useful.
+      deterministic_score:
+        values.length === 1 ? 1 : 1 - index / (values.length - 1),
+    }));
+  const selected = verifiedForYou.length
+    ? verifiedForYou
+    : selectHybridAiInput(ranked, {
+        limit: Math.min(
+          PIPELINE.maxForYouInput,
+          run.settings_snapshot.ai_input_limit,
+        ),
+      });
 
   if (selected.length) {
     const { error: rankingError } = await db
@@ -377,7 +403,7 @@ export async function fetchAndRank({
     x_view_floor_passed: searchResult.meta.qualityPassed,
     x_cross_channel_duplicates: searchResult.meta.crossChannelDuplicates,
     x_metrics_captured_at: searchResult.meta.metricsCapturedAt,
-    after_filtering: ranked.length,
+    after_filtering: verifiedForYou.length || ranked.length,
     sent_to_luna: selected.length,
     sent_to_luna_followed: selected.filter(
       (post) => post.source_channel === "followed",
@@ -389,7 +415,7 @@ export async function fetchAndRank({
     x_partial: searchResult.partial,
   };
 
-  if (selected.length < 5) {
+  if (selected.length === 0) {
     await finishWithoutIdeas(db, run, counts);
     return [];
   }

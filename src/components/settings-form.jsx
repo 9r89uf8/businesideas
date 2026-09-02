@@ -178,7 +178,7 @@ export default function SettingsForm({ ownerId, initialSettings }) {
           </div>
           <div className="rounded-xl bg-white/75 p-4 text-xs leading-5 text-[var(--ink-soft)]">
             <p className="font-bold text-[var(--ink)]">Preferred, never forced</p>
-            <p className="mt-2">Every post must first reach 19K views, including posts from preferred accounts. Views, comments, likes, then saves rank the posts that qualify. Reposts and quotes do not affect quality. Preferred accounts are queried first and can fill the entire 100-post pool; topic discovery uses at most one fifth of otherwise unused capacity.</p>
+            <p className="mt-2">A successful For You collection supplies the first 30 verified original posts directly to the commercial filter. If that lane is unavailable, the official-API fallback still uses the 19K-view floor and ranks preferred accounts before topic discovery.</p>
           </div>
         </div>
 
