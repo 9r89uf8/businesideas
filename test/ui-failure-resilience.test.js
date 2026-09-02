@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 import { buildEvidenceSources } from "../src/components/evidence-state.js";
@@ -6,6 +7,19 @@ import {
   describeRun,
   getRunStageLabel,
 } from "../src/components/run-status-state.js";
+
+test("the manual run control explains its For You collection scope", async () => {
+  const source = await readFile(
+    new URL("../src/components/run-status.jsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /up to 30 new original posts from your X For You feed/i);
+  assert.match(source, /skips posts already seen/i);
+  assert.match(source, /continues the normal research run/i);
+  assert.match(source, /Collect For You & run research/);
+  assert.match(source, /fetch\("\/api\/runs", \{ method: "POST" \}\)/);
+});
 
 test("failed run descriptions expose the last stage and a safe error", () => {
   const failed = describeRun({

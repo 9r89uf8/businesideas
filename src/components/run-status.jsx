@@ -105,6 +105,9 @@ export default function RunStatus({ initialRun }) {
               )}
             </div>
             <p className="mt-1.5 text-sm leading-6 text-[var(--ink-soft)]">{copy.detail}</p>
+            <p className="mt-2 max-w-2xl text-xs leading-5 text-[var(--ink-soft)]">
+              A manual run collects up to 30 new original posts from your X For You feed, skips posts already seen, then continues the normal research run.
+            </p>
             {failed && (
               <dl className="mt-3 grid gap-1.5 text-xs leading-5">
                 <div className="flex flex-wrap gap-x-2">
@@ -130,7 +133,11 @@ export default function RunStatus({ initialRun }) {
           <svg viewBox="0 0 20 20" aria-hidden="true" className="size-4" fill="none">
             <path d="M10 3v14M3 10h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
           </svg>
-          {starting ? "Starting…" : active ? "Run in progress" : "Run now"}
+          {starting
+            ? "Starting…"
+            : active
+              ? "Run in progress"
+              : "Collect For You & run research"}
         </button>
       </div>
       {active && (

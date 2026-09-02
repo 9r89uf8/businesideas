@@ -121,10 +121,66 @@ function retryXRateLimit(error) {
   throw error;
 }
 
+export function isXApiDiscoveryEnabled(env = process.env) {
+  return env?.X_API_DISCOVERY_ENABLED !== "false";
+}
+
+export function assertForYouOnlyCollectionCompleted({
+  apiDiscoveryEnabled,
+  forYouCollectionCompleted,
+} = {}) {
+  if (!apiDiscoveryEnabled && forYouCollectionCompleted !== true) {
+    throw new Error("For You collection did not complete.");
+  }
+}
+
+export function buildZeroedXSearchResult({ run, metricsCapturedAt }) {
+  return {
+    posts: [],
+    rankablePosts: [],
+    partial: false,
+    partialError: null,
+    meta: {
+      resultCount: 0,
+      rawResultCount: 0,
+      requestedLimit: 0,
+      windowStart: run.window_start,
+      windowEnd: run.window_end,
+      metricsCapturedAt,
+      followedAccountsConfigured: 0,
+      followedQueryBatches: 0,
+      followedRequestedLimit: 0,
+      followedReturned: 0,
+      followedBatchDuplicates: 0,
+      followedQualityPassed: 0,
+      topicRequestedLimit: 0,
+      topicReturned: 0,
+      topicQualityPassed: 0,
+      qualityPassed: 0,
+      crossChannelDuplicates: 0,
+      pagesFetched: 0,
+    },
+  };
+}
+
+async function loadExistingForYouPostIds(db, ownerId, candidates) {
+  const candidateIds = candidates.map((candidate) => candidate.post_id);
+  const { data, error } = await db
+    .from("posts")
+    .select("x_post_id")
+    .eq("owner_id", ownerId)
+    .in("x_post_id", candidateIds);
+  throwDatabaseError(error, "checking prior For You posts");
+
+  const existingIds = new Set((data || []).map((post) => post.x_post_id));
+  return new Set(candidateIds.filter((postId) => existingIds.has(postId)));
+}
+
 export async function fetchAndRank({
   runId,
   ownerId,
   forYouCandidates = [],
+  forYouCollectionCompleted = false,
 }) {
   "use step";
 
@@ -164,36 +220,57 @@ export async function fetchAndRank({
     error_message: null,
   });
 
+  const apiDiscoveryEnabled = isXApiDiscoveryEnabled();
+  assertForYouOnlyCollectionCompleted({
+    apiDiscoveryEnabled,
+    forYouCollectionCompleted,
+  });
   let searchResult;
   try {
     await purgeExpiredRawContent(db, ownerId, now);
     await refreshRetainedEvidence(db, ownerId, now);
     const metricsCapturedAt = new Date().toISOString();
-    const apiSearchResult = await searchHybridRecentPosts({
-      query: run.settings_snapshot.x_query,
-      followedUsernames: run.settings_snapshot.followed_x_usernames,
-      startTime: run.window_start,
-      endTime: run.window_end,
-      qualityTime: metricsCapturedAt,
-      candidateLimit: run.settings_snapshot.candidate_limit,
-      aiInputLimit: run.settings_snapshot.ai_input_limit,
-    });
-    searchResult = apiSearchResult;
+    searchResult = apiDiscoveryEnabled
+      ? await searchHybridRecentPosts({
+          query: run.settings_snapshot.x_query,
+          followedUsernames: run.settings_snapshot.followed_x_usernames,
+          startTime: run.window_start,
+          endTime: run.window_end,
+          qualityTime: metricsCapturedAt,
+          candidateLimit: run.settings_snapshot.candidate_limit,
+          aiInputLimit: run.settings_snapshot.ai_input_limit,
+        })
+      : buildZeroedXSearchResult({ run, metricsCapturedAt });
   } catch (error) {
     retryXRateLimit(error);
   }
 
   if (forYouCandidates.length) {
-    try {
-      searchResult = await hydrateAndMergeForYouPosts({
+    const hydrateForYouPosts = async () => {
+      const excludedPostIds = await loadExistingForYouPostIds(
+        db,
+        ownerId,
+        forYouCandidates,
+      );
+      return hydrateAndMergeForYouPosts({
         searchResult,
         candidates: forYouCandidates,
+        excludedPostIds,
         windowStart: run.window_start,
         windowEnd: run.window_end,
       });
-    } catch {
-      // This is an optional discovery lane. Lookup, rate-limit, or validation
-      // failures must never discard the official followed/topic API result.
+    };
+
+    if (apiDiscoveryEnabled) {
+      try {
+        searchResult = await hydrateForYouPosts();
+      } catch {
+        // This is an optional discovery lane while the official followed/topic
+        // result exists, so hydration failures must not discard that result.
+      }
+    } else {
+      // In For You-only mode there is no official result to fall back to.
+      searchResult = await hydrateForYouPosts();
     }
   }
 
@@ -266,6 +343,10 @@ export async function fetchAndRank({
         x_for_you_unavailable: searchResult.meta.forYouUnavailable,
         x_for_you_unknown: searchResult.meta.forYouUnknown,
         x_for_you_outside_window: searchResult.meta.forYouOutsideWindow,
+        x_for_you_already_seen: searchResult.meta.forYouAlreadySeen,
+        x_for_you_replies_rejected:
+          searchResult.meta.forYouRepliesRejected,
+        x_for_you_limit_skipped: searchResult.meta.forYouLimitSkipped,
         x_for_you_cross_channel_duplicates:
           searchResult.meta.forYouCrossChannelDuplicates,
         x_for_you_reposts_rejected:
@@ -280,6 +361,7 @@ export async function fetchAndRank({
       };
   const counts = {
     ...(run.counts || {}),
+    x_api_discovery_enabled: apiDiscoveryEnabled,
     x_returned: posts.length,
     x_raw_returned: searchResult.meta.rawResultCount,
     x_followed_accounts_configured:

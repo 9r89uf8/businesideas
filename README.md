@@ -86,12 +86,15 @@ configured owner.
 ## Optional read-only For You collector
 
 The repository also contains an optional discovery lane for the authenticated X
-`For you` feed. It is additive: the existing followed-account and topic-search
-lanes still use the official X API and remain unchanged. When the optional lane
-is enabled, the same daily Vercel Workflow invokes one stopped, SSM-managed EC2
-worker and receives at most 100 ordered post IDs. The official X lookup API then
-hydrates those IDs before they can enter the existing quality gate, ranking,
-Luna, Terra, and Sol stages.
+`For you` feed. By default it is additive to the followed-account and
+topic-search lanes. Setting `X_API_DISCOVERY_ENABLED=false` disables those two
+recent-search lanes while retaining the official X lookup used to validate the
+browser-discovered IDs. When the optional lane is enabled, the same daily
+Vercel Workflow invokes one stopped, SSM-managed EC2 worker and receives at most
+100 ordered post IDs. The app removes IDs already stored for the owner, rejects
+replies, reposts, and quote posts using the official lookup metadata, and keeps
+the first 30 new original posts in feed order. Posts below 19,000 views remain
+visible in the audit data but do not enter ranking, Luna, Terra, or Sol.
 
 [X's current automation rules](https://help.x.com/en/rules-and-policies/x-automation)
 prohibit scripting the X website and warn that it may result in account
@@ -339,8 +342,8 @@ removes a stale lock automatically.
 Local JSONL rows remain diagnostics/discovery records. Production uses only the
 bounded post IDs and feed positions returned to the one-use Workflow webhook.
 Official X lookup supplies authoritative author IDs, timestamps,
-repost/quote references, and public metrics before a For You candidate can be
-ranked.
+reply/repost/quote references, and public metrics before a For You candidate can
+be stored or ranked.
 
 ## Verification
 
@@ -351,16 +354,29 @@ npm run build
 
 ## Optional cloud For You source
 
-The existing official X API sources remain unchanged. When both production
-values below are present, the daily Vercel Workflow also starts the pinned AWS
-worker, collects up to 100 ordered post IDs from the approved account's
-read-only For You feed, hydrates those IDs through the official X lookup API,
-and persists eligible rows as `source_channel = 'for_you'`.
+When the three production values below are present, the daily Vercel Workflow
+uses the pinned AWS worker as its discovery source. It scrolls the approved
+account's read-only For You feed and overfetches up to 100 ordered post IDs so
+that duplicates and non-original posts do not consume the 30-post result. The
+app excludes owner posts already stored, hydrates only unseen IDs through the
+official X lookup API, rejects replies, reposts, and quotes, and persists the
+first 30 new originals as `source_channel = 'for_you'`.
 
 ```text
 X_WEB_AUTOMATION_ENABLED=true
 X_WEB_AUTOMATION_APPROVED_ACCOUNT=@approved_handle
+X_API_DISCOVERY_ENABLED=false
 ```
+
+`X_API_DISCOVERY_ENABLED=false` disables followed-account and topic recent
+search only. Keep the server-only `X_BEARER_TOKEN`: the lookup endpoint remains
+necessary for post content, author, timestamp, metrics, and authoritative post
+type. Omitting this flag or setting any other value restores the additive API
+discovery lanes.
+
+The owner dashboard's **Collect For You & run research** button starts this same
+collection on demand and then continues the normal research run. The existing
+single-active-run guard prevents overlapping manual and scheduled runs.
 
 The worker is EC2 `i-064c47109859601d1` in `us-east-2`. Vercel assumes the
 production-only role `signal-foundry-vercel-x-for-you`, invokes the installed
@@ -373,9 +389,10 @@ code.
 
 Apply
 [`005_for_you_source_channel.sql`](./supabase/migrations/005_for_you_source_channel.sql)
-before enabling the two values. The optional lane fails closed for browser
-access and fails open for the existing research run, so it cannot replace or
-block the official X API paths.
+before enabling the values. Browser access always fails closed. Hydration fails
+open only while API discovery is enabled and an official search result exists;
+in For You-only mode it fails the run instead of reporting an empty successful
+collection.
 
 ## Deployment and worker setup
 

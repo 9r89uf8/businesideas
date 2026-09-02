@@ -506,15 +506,27 @@ collection and shuts down immediately on command exit; the Workflow also
 requests `StopInstances` in its `finally` path. A systemd timer independently
 stops the machine 25 minutes after each boot if both application paths fail.
 
-The callback records are only discovery candidates. `fetchAndRank` hydrates
-them through the existing official X lookup endpoint, requires the current
-run's exact 72-hour window, rejects unavailable posts, reposts, quotes, and
-posts below 19,000 views, and merges survivors with
-`source_channel = 'for_you'`. Existing followed/topic records win cross-channel
-ID duplicates. The preserved feed position becomes the existing
-`run_posts.search_position`, after which the unchanged ranking and Luna/Terra/Sol
-pipeline applies. Migration `005_for_you_source_channel.sql` extends the source
-channel constraint for this additive lane.
+The callback records are only discovery candidates. Before lookup,
+`fetchAndRank` queries the owner's canonical `posts` rows and removes every ID
+already stored through any source lane. It then hydrates only unseen IDs through
+the existing official X lookup endpoint, requires the current run's exact
+72-hour window, and rejects unavailable posts, replies, reposts, and quote
+posts. The first 30 new originals in feed order are merged with
+`source_channel = 'for_you'`; originals below 19,000 views remain in the audit
+snapshot but are not rankable. Existing followed/topic records win same-run
+cross-channel ID duplicates. The preserved feed position becomes the existing
+`run_posts.search_position`, after which the unchanged ranking and
+Luna/Terra/Sol pipeline applies. Migration
+`005_for_you_source_channel.sql` extends the source-channel constraint.
+
+Official followed-account and topic recent search remains the default. Exact
+`X_API_DISCOVERY_ENABLED=false` replaces those discovery calls with an empty
+baseline while retaining official lookup hydration for the browser IDs. In this
+For You-only mode lookup, validation, or history-query failure fails the run;
+when API discovery is enabled the optional lane remains fail-open. The owner
+dashboard's existing authenticated run control is labeled **Collect For You &
+run research** and invokes this same workflow, so there is no second queue,
+route, or collection status model.
 
 For supervised Windows development, `npm run x:for-you:check` validates the
 same flag/account gate and safe configuration without acquiring the profile
@@ -1528,6 +1540,7 @@ Private Supabase OAuth approval UI for the MCP client.
 | Raw X text retention | 30 days |
 | Optional For You callback payload | 16 KiB maximum; at most 100 unique IDs and feed positions |
 | Optional For You post limit | Configured value, hard-capped at 100 |
+| Optional For You new original posts retained | 30 per run, after historical deduplication and post-type filtering |
 | Optional For You maximum scrolls | 60 by default, hard-capped at 200 |
 | Optional For You no-growth stop | 5 cycles by default |
 | Optional For You runtime stop | 5 minutes by default, hard-capped at 15 minutes |
@@ -1641,6 +1654,16 @@ After permission exists, authorization is exactly these two values:
 X_WEB_AUTOMATION_ENABLED=true
 X_WEB_AUTOMATION_APPROVED_ACCOUNT=@approved_handle
 ```
+
+For the current For You-only production mode, also set:
+
+```text
+X_API_DISCOVERY_ENABLED=false
+```
+
+This is a reversible discovery switch, not part of the browser authorization
+gate. It skips followed-account and topic recent search but retains the
+server-only X bearer token and official lookup used to validate For You IDs.
 
 The approved handle must match the credentials-only secret's
 `X_LOGIN_USERNAME` case-insensitively. There are no signatures, public keys,
@@ -1816,6 +1839,14 @@ AWS call for this lane:
 ```text
 X_WEB_AUTOMATION_ENABLED
 X_WEB_AUTOMATION_APPROVED_ACCOUNT
+```
+
+The independent server-only discovery switch defaults to enabled. Exact
+lowercase `false` disables followed-account and topic recent search but not the
+official lookup hydration used by the For You lane:
+
+```text
+X_API_DISCOVERY_ENABLED
 ```
 
 There are no Vercel environment values for AWS region, instance ID, role ARN,
@@ -2091,8 +2122,9 @@ These are current operating boundaries, not alternate execution paths.
 
 ## 29. Optional X For You cloud collector
 
-This is an additive discovery lane. It does not replace the official followed
-account or topic recent-search requests.
+This is additive by default. Exact `X_API_DISCOVERY_ENABLED=false` turns off the
+official followed-account and topic recent-search requests while preserving the
+official lookup endpoint used to validate browser-discovered posts.
 
 At the beginning of the daily Vercel Workflow,
 `src/workflows/x-for-you-cloud-steps.js` requires both
@@ -2116,13 +2148,16 @@ button on the exact login URL: the collector enters the email, clicks the exact
 `Continue` control once, switches to password once, and then submits the
 password once. It never reads, fills, or submits a six-digit verification code.
 
-The Vercel Workflow hydrates accepted IDs through the existing official X
-lookup client, applies the normal date, repost, quote, view-quality, duplicate,
-ranking, retention, and RLS rules, and writes the new lane as
-`source_channel = 'for_you'`. Migration
-`005_for_you_source_channel.sql` extends only that check constraint. Browser or
-AWS failure returns an empty optional lane and leaves the official collection
-path running.
+The Vercel Workflow first excludes IDs already present in the owner's canonical
+posts. It hydrates unseen IDs through the existing official X lookup client,
+applies the date and reply/repost/quote rules, and writes at most the first 30
+new original feed posts as `source_channel = 'for_you'`. The 19,000-view quality
+floor controls ranking and downstream model input, not whether an accepted
+original appears in the audit snapshot. Migration
+`005_for_you_source_channel.sql` extends only the source-channel constraint.
+When API discovery is enabled, browser, AWS, or For You hydration failure leaves
+the official search path running. In For You-only mode, browser/AWS failure or
+lookup/history-validation failure fails the run.
 
 AWS infrastructure is owned by the `signal-foundry-x-for-you` and
 `signal-foundry-vercel-x-for-you-oidc` CloudFormation stacks. Deployment source

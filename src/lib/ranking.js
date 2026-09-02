@@ -153,6 +153,50 @@ export function isQuotePost(post) {
   );
 }
 
+function comparableXId(value) {
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value) || value < 0) return null;
+    return String(value);
+  }
+  if (typeof value === "bigint") {
+    if (value < 0n) return null;
+    const id = String(value);
+    return /^\d{1,19}$/.test(id) ? id : null;
+  }
+  if (typeof value !== "string") return null;
+
+  const id = value.trim();
+  return /^\d{1,19}$/.test(id) ? id : null;
+}
+
+export function isReplyPost(post) {
+  if (post?.is_reply === true || post?.isReply === true) {
+    return true;
+  }
+
+  const references = post?.referenced_tweets ?? post?.referencedTweets;
+  if (Array.isArray(references)) {
+    if (references.some((reference) => reference?.type === "replied_to")) {
+      return true;
+    }
+    // Do not let the conversation fallback relabel an authoritative quote or
+    // repost reference as a reply. Those post types have their own filters.
+    if (
+      references.some((reference) =>
+        ["quoted", "retweeted"].includes(reference?.type),
+      )
+    ) {
+      return false;
+    }
+  }
+
+  const id = comparableXId(post?.id ?? post?.post_id ?? post?.x_post_id);
+  const conversationId = comparableXId(
+    post?.conversation_id ?? post?.conversationId,
+  );
+  return id !== null && conversationId !== null && conversationId !== id;
+}
+
 export function hasObviousRepeatedPromotion(text) {
   if (typeof text !== "string" || !PROMOTIONAL_LANGUAGE.test(text)) {
     return false;

@@ -42,9 +42,11 @@ function optionalForYouResult({
   authState = "unknown",
   errorCode = null,
   checked = true,
+  completed = false,
 } = {}) {
   return {
     candidates,
+    completed,
     connection: checked ? { authState, errorCode } : null,
   };
 }
@@ -53,6 +55,7 @@ function optionalForYouCallbackResult(result) {
   const observation = connectionObservationFromCloudResult(result);
   return optionalForYouResult({
     candidates: result?.status === "completed" ? result.candidates : [],
+    completed: result?.status === "completed",
     ...observation,
   });
 }
@@ -196,6 +199,7 @@ export async function dailyResearch({ runId, ownerId }) {
       runId,
       ownerId,
       forYouCandidates,
+      forYouCollectionCompleted: forYouResult.completed,
     });
   } catch {
     const message = "Fetching and ranking failed after retries.";

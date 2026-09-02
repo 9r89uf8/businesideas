@@ -197,8 +197,6 @@ test("For You hydrations preserve feed positions and enter only the existing eli
     [
       ["101", "followed", 7],
       ["202", "for_you", 2],
-      ["204", "for_you", 4],
-      ["205", "for_you", 5],
       ["206", "for_you", 6],
       ["207", "for_you", 7],
     ],
@@ -207,21 +205,160 @@ test("For You hydrations preserve feed positions and enter only the existing eli
     result.rankablePosts.map((post) => post.id),
     ["101", "202", "207"],
   );
-  assert.equal(result.meta.resultCount, 6);
+  assert.equal(result.meta.resultCount, 4);
   assert.equal(result.meta.rawResultCount, 10);
   assert.equal(result.meta.qualityPassed, 3);
   assert.equal(result.meta.crossChannelDuplicates, 2);
   assert.equal(result.meta.forYouRequested, 9);
   assert.equal(result.meta.forYouHydrated, 8);
-  assert.equal(result.meta.forYouReturned, 5);
+  assert.equal(result.meta.forYouReturned, 3);
   assert.equal(result.meta.forYouUnavailable, 1);
   assert.equal(result.meta.forYouUnknown, 0);
   assert.equal(result.meta.forYouOutsideWindow, 2);
   assert.equal(result.meta.forYouCrossChannelDuplicates, 1);
+  assert.equal(result.meta.forYouAlreadySeen, 0);
   assert.equal(result.meta.forYouRepostsRejected, 1);
   assert.equal(result.meta.forYouQuotesRejected, 1);
+  assert.equal(result.meta.forYouRepliesRejected, 0);
+  assert.equal(result.meta.forYouLimitSkipped, 0);
   assert.equal(result.meta.forYouViewQualityRejected, 1);
   assert.equal(result.meta.forYouQualityPassed, 2);
+});
+
+test("For You hydration rejects authoritative replies from stored posts", async () => {
+  const searchResult = makeSearchResult();
+  const candidates = [
+    { post_id: "301", feed_position: 1 },
+    { post_id: "302", feed_position: 2 },
+    { post_id: "303", feed_position: 3 },
+  ];
+
+  const result = await hydrateAndMergeForYouPosts({
+    searchResult,
+    candidates,
+    windowStart: "2026-08-26T00:00:00.000Z",
+    windowEnd: "2026-08-29T00:00:00.000Z",
+    lookup: async () => ({
+      posts: [
+        makePost("301", {
+          conversation_id: "300",
+          referenced_tweets: [{ type: "replied_to", id: "300" }],
+        }),
+        makePost("302", { conversation_id: "300" }),
+        makePost("303"),
+      ],
+      unavailableIds: [],
+      unknownIds: [],
+    }),
+  });
+
+  assert.deepEqual(
+    result.posts.map((post) => post.id),
+    ["101", "303"],
+  );
+  assert.deepEqual(
+    result.rankablePosts.map((post) => post.id),
+    ["101", "303"],
+  );
+  assert.equal(result.meta.forYouReturned, 1);
+  assert.equal(result.meta.forYouRepliesRejected, 2);
+  assert.equal(result.meta.forYouAlreadySeen, 0);
+  assert.equal(result.meta.forYouLimitSkipped, 0);
+});
+
+test("historical For You IDs are counted and omitted from lookup", async () => {
+  const searchResult = makeSearchResult();
+  const candidates = [
+    { post_id: "401", feed_position: 1 },
+    { post_id: "402", feed_position: 2 },
+    { post_id: "403", feed_position: 3 },
+  ];
+  const excludedPostIds = new Set(["401", "403"]);
+  let requestedIds;
+
+  const result = await hydrateAndMergeForYouPosts({
+    searchResult,
+    candidates,
+    excludedPostIds,
+    windowStart: "2026-08-26T00:00:00.000Z",
+    windowEnd: "2026-08-29T00:00:00.000Z",
+    lookup: async ({ ids }) => {
+      requestedIds = ids;
+      return {
+        posts: [makePost("402")],
+        unavailableIds: [],
+        unknownIds: [],
+      };
+    },
+  });
+
+  assert.deepEqual(requestedIds, ["402"]);
+  assert.deepEqual(
+    result.posts.map((post) => post.id),
+    ["101", "402"],
+  );
+  assert.equal(result.meta.forYouRequested, 3);
+  assert.equal(result.meta.forYouHydrated, 1);
+  assert.equal(result.meta.forYouAlreadySeen, 2);
+  assert.equal(result.meta.forYouReturned, 1);
+  assert.equal(result.meta.forYouRepliesRejected, 0);
+  assert.equal(result.meta.forYouLimitSkipped, 0);
+});
+
+test("For You originals are capped at 30 before the quality gate", async () => {
+  const searchResult = makeSearchResult();
+  const ids = Array.from({ length: 35 }, (_, index) => String(500 + index));
+  const candidates = ids
+    .map((postId, index) => ({
+      post_id: postId,
+      feed_position: index + 1,
+    }))
+    .reverse();
+
+  const result = await hydrateAndMergeForYouPosts({
+    searchResult,
+    candidates,
+    windowStart: "2026-08-26T00:00:00.000Z",
+    windowEnd: "2026-08-29T00:00:00.000Z",
+    lookup: async ({ ids: requestedIds }) => ({
+      posts: requestedIds
+        .map((id, index) =>
+          makePost(id, index === 0
+            ? {
+                public_metrics: {
+                  impression_count: POST_QUALITY.minimumViews - 1,
+                  reply_count: 100,
+                  like_count: 100,
+                  bookmark_count: 100,
+                },
+              }
+            : {}),
+        )
+        .reverse(),
+      unavailableIds: [],
+      unknownIds: [],
+    }),
+  });
+
+  const returnedForYou = result.posts.filter(
+    (post) => post.source_channel === "for_you",
+  );
+  assert.deepEqual(
+    returnedForYou.map((post) => post.id),
+    ids.slice(0, 30),
+  );
+  assert.deepEqual(
+    returnedForYou.map((post) => post.search_position),
+    Array.from({ length: 30 }, (_, index) => index + 1),
+  );
+  assert.equal(result.meta.forYouRequested, 35);
+  assert.equal(result.meta.forYouHydrated, 35);
+  assert.equal(result.meta.forYouReturned, 30);
+  assert.equal(result.meta.forYouViewQualityRejected, 1);
+  assert.equal(result.meta.forYouQualityPassed, 29);
+  assert.equal(result.meta.forYouAlreadySeen, 0);
+  assert.equal(result.meta.forYouRepliesRejected, 0);
+  assert.equal(result.meta.forYouLimitSkipped, 5);
 });
 
 test("the additive migration and posts UI recognize the For You channel", async () => {
@@ -251,7 +388,7 @@ test("the additive migration and posts UI recognize the For You channel", async 
   const officialSearch = workflow.indexOf("await searchHybridRecentPosts");
   const officialSearchCatch = workflow.indexOf("} catch (error)", officialSearch);
   const optionalHydration = workflow.indexOf(
-    "await hydrateAndMergeForYouPosts",
+    "hydrateAndMergeForYouPosts({",
     officialSearchCatch,
   );
   const optionalHydrationCatch = workflow.indexOf(

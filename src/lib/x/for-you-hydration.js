@@ -2,12 +2,14 @@ import "server-only";
 
 import {
   isQuotePost,
+  isReplyPost,
   isRepost,
   passesPostQualityGate,
 } from "../ranking.js";
 import { lookupPosts } from "./lookup-posts.js";
 
 const MAXIMUM_CANDIDATES = 100;
+const MAXIMUM_ORIGINAL_POSTS = 30;
 const X_POST_ID_PATTERN = /^[1-9][0-9]{0,18}$/;
 const MINIMUM_FEED_POSITION = 1;
 const MAXIMUM_FEED_POSITION = 100;
@@ -89,8 +91,9 @@ export function normalizeForYouCandidates(value) {
 /**
  * Adds official-API hydrations after the existing followed/topic collection.
  * Existing API lanes win ID collisions and retain their original positions.
- * Rejected in-window posts remain in the audit snapshot, matching the current
- * search behavior, but only eligible posts proceed to deterministic ranking.
+ * Accepted originals remain in the audit snapshot even below the view floor,
+ * while replies, reposts, and quotes are excluded and only eligible posts
+ * proceed to deterministic ranking.
  */
 export function mergeHydratedForYouPosts({
   searchResult,
@@ -98,12 +101,16 @@ export function mergeHydratedForYouPosts({
   lookupResult,
   windowStart,
   windowEnd,
+  excludedPostIds = new Set(),
 }) {
   if (!searchResult || !Array.isArray(searchResult.posts)) {
     throw new TypeError("A valid X search result is required.");
   }
   if (!Array.isArray(searchResult.rankablePosts)) {
     throw new TypeError("The X search result must include rankable posts.");
+  }
+  if (!(excludedPostIds instanceof Set)) {
+    throw new TypeError("Excluded For You post IDs must be a Set.");
   }
 
   const start = parseWindowBound(windowStart, "windowStart");
@@ -114,7 +121,9 @@ export function mergeHydratedForYouPosts({
 
   const normalizedCandidates = normalizeForYouCandidates(candidates);
   const candidateIds = new Set(
-    normalizedCandidates.map((candidate) => candidate.post_id),
+    normalizedCandidates
+      .filter((candidate) => !excludedPostIds.has(candidate.post_id))
+      .map((candidate) => candidate.post_id),
   );
   const hydratedById = new Map(
     (Array.isArray(lookupResult?.posts) ? lookupResult.posts : [])
@@ -125,12 +134,19 @@ export function mergeHydratedForYouPosts({
   const forYouPosts = [];
   const rankableForYouPosts = [];
   let crossChannelDuplicates = 0;
+  let alreadySeen = 0;
   let outsideWindow = 0;
   let repostsRejected = 0;
   let quotesRejected = 0;
+  let repliesRejected = 0;
+  let limitSkipped = 0;
   let viewQualityRejected = 0;
 
   for (const candidate of normalizedCandidates) {
+    if (excludedPostIds.has(candidate.post_id)) {
+      alreadySeen += 1;
+      continue;
+    }
     const post = hydratedById.get(candidate.post_id);
     if (!post) continue;
 
@@ -148,16 +164,22 @@ export function mergeHydratedForYouPosts({
       source_channel: "for_you",
       search_position: candidate.feed_position,
     };
-    forYouPosts.push(positionedPost);
 
     if (isRepost(positionedPost)) {
       repostsRejected += 1;
     } else if (isQuotePost(positionedPost)) {
       quotesRejected += 1;
-    } else if (!passesPostQualityGate(positionedPost)) {
-      viewQualityRejected += 1;
+    } else if (isReplyPost(positionedPost)) {
+      repliesRejected += 1;
+    } else if (forYouPosts.length >= MAXIMUM_ORIGINAL_POSTS) {
+      limitSkipped += 1;
     } else {
-      rankableForYouPosts.push(positionedPost);
+      forYouPosts.push(positionedPost);
+      if (!passesPostQualityGate(positionedPost)) {
+        viewQualityRejected += 1;
+      } else {
+        rankableForYouPosts.push(positionedPost);
+      }
     }
   }
 
@@ -193,8 +215,11 @@ export function mergeHydratedForYouPosts({
       forYouUnknown: unknownCount,
       forYouOutsideWindow: outsideWindow,
       forYouCrossChannelDuplicates: crossChannelDuplicates,
+      forYouAlreadySeen: alreadySeen,
       forYouRepostsRejected: repostsRejected,
       forYouQuotesRejected: quotesRejected,
+      forYouRepliesRejected: repliesRejected,
+      forYouLimitSkipped: limitSkipped,
       forYouViewQualityRejected: viewQualityRejected,
       forYouQualityPassed: rankableForYouPosts.length,
     },
@@ -211,19 +236,29 @@ export async function hydrateAndMergeForYouPosts({
   candidates,
   windowStart,
   windowEnd,
+  excludedPostIds = new Set(),
   lookup = lookupPosts,
   signal,
 }) {
   const normalizedCandidates = normalizeForYouCandidates(candidates);
   if (normalizedCandidates.length === 0) return searchResult;
+  if (!(excludedPostIds instanceof Set)) {
+    throw new TypeError("Excluded For You post IDs must be a Set.");
+  }
   if (typeof lookup !== "function") {
     throw new TypeError("An X lookup implementation is required.");
   }
 
-  const lookupResult = await lookup({
-    ids: normalizedCandidates.map((candidate) => candidate.post_id),
-    signal,
-  });
+  const lookupIds = normalizedCandidates
+    .filter((candidate) => !excludedPostIds.has(candidate.post_id))
+    .map((candidate) => candidate.post_id);
+  const lookupResult = lookupIds.length > 0
+    ? await lookup({ ids: lookupIds, signal })
+    : {
+        posts: [],
+        unavailableIds: [],
+        unknownIds: [],
+      };
 
   return mergeHydratedForYouPosts({
     searchResult,
@@ -231,5 +266,6 @@ export async function hydrateAndMergeForYouPosts({
     lookupResult,
     windowStart,
     windowEnd,
+    excludedPostIds,
   });
 }

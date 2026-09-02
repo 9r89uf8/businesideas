@@ -8,6 +8,7 @@ import {
   createPostTextHash,
   hashPostText,
   hasObviousRepeatedPromotion,
+  isReplyPost,
   metricSignal,
   normalizePostText,
   passesPostQualityGate,
@@ -216,6 +217,38 @@ test("repost, quote, and X result position never affect quality", () => {
   assert.equal(ranked[0].id, "a-clean");
   assert.equal(ranked[0].deterministic_score, ranked[1].deterministic_score);
   assert.equal(ranked[0].view_signal, ranked[1].view_signal);
+});
+
+test("authoritative reply detection fails closed only for valid reply evidence", () => {
+  assert.equal(
+    isReplyPost({
+      id: "101",
+      conversation_id: "101",
+      referenced_tweets: [{ type: "replied_to", id: "100" }],
+    }),
+    true,
+  );
+  assert.equal(
+    isReplyPost({ id: "102", conversation_id: "100", referenced_tweets: [] }),
+    true,
+  );
+  assert.equal(isReplyPost({ id: "103", conversation_id: "103" }), false);
+  assert.equal(
+    isReplyPost({
+      id: "104",
+      conversation_id: "100",
+      referenced_tweets: [{ type: "quoted", id: "99" }],
+    }),
+    false,
+  );
+  assert.equal(
+    isReplyPost({ id: "105", conversation_id: "not-an-x-id" }),
+    false,
+  );
+  assert.equal(
+    isReplyPost({ id: Number.MAX_SAFE_INTEGER + 1, conversation_id: "1" }),
+    false,
+  );
 });
 
 test("reposts and quote posts are excluded even if a custom query returns them", () => {
