@@ -319,7 +319,8 @@ npm run x:for-you:collect
 The worker always uses headed installed Chrome with the dedicated persistent
 profile. It reuses an authenticated session, uses the configured email and
 password only when login is required, makes a single login attempt, confirms
-the live session through the exact allowed-host profile-link handle, requires
+the live session through the exact allowed-host profile-link handle after a
+bounded render wait, requires
 the exact X Home route and selected English `For you` tab throughout
 collection, reads only rendered articles intersecting the viewport, never
 clicks timeline content, and stops safely on verification, CAPTCHA, selector

@@ -80,6 +80,8 @@ class SyntheticAuthenticatedPage {
     }
     return new SyntheticLocator();
   }
+
+  async waitForTimeout() {}
 }
 
 function assertSafeAccountError(error, { code, forbiddenHandles }) {
@@ -103,6 +105,20 @@ test("authenticated account binding matches handles case-insensitively", async (
   });
   assert.equal(
     await requireAuthenticatedAccount(profileLinkPage, "@COLLECTOR_ACCT"),
+    "@Collector_Acct",
+  );
+});
+
+test("authenticated account binding waits for the exact profile link", async () => {
+  const page = new SyntheticAuthenticatedPage();
+  page.waitForTimeout = async () => {
+    page.profileHref = "/Collector_Acct";
+  };
+
+  assert.equal(
+    await requireAuthenticatedAccount(page, "@collector_acct", {
+      timeoutMs: 1_000,
+    }),
     "@Collector_Acct",
   );
 });

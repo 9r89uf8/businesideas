@@ -42,7 +42,7 @@ export function resolveXLoginCredentials(env = process.env) {
   });
 }
 
-export async function requireAuthenticatedAccount(page, expectedAccount) {
+async function readAuthenticatedAccount(page, expectedAccount) {
   requireXHomePage(page);
   if (!/^@[A-Za-z0-9_]{1,15}$/.test(expectedAccount || "")) {
     throw authenticationError(
@@ -94,6 +94,35 @@ export async function requireAuthenticatedAccount(page, expectedAccount) {
     );
   }
   return `@${displayHandle}`;
+}
+
+export async function requireAuthenticatedAccount(
+  page,
+  expectedAccount,
+  {
+    timeoutMs = 0,
+    assertPermissionActive = () => {},
+  } = {},
+) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+    throw new TypeError("Authenticated-account timeout is invalid.");
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    assertPermissionActive();
+    try {
+      return await readAuthenticatedAccount(page, expectedAccount);
+    } catch (error) {
+      if (
+        error?.code !== "AUTH_ACCOUNT_UNVERIFIED" ||
+        Date.now() >= deadline
+      ) {
+        throw error;
+      }
+    }
+    await page.waitForTimeout(150);
+  }
 }
 
 function authenticationError(message, code = "AUTH_FAILED") {

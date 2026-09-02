@@ -93,7 +93,10 @@ export async function runAuthorizedCollector({
     });
     navigationGuard.completeLogin();
     assertPermissionActive();
-    await requireAuthenticatedAccount(page, authorized.configuredAccount);
+    await requireAuthenticatedAccount(page, authorized.configuredAccount, {
+      timeoutMs: runtimeOptions.stateTimeoutMs,
+      assertPermissionActive,
+    });
     assertPermissionActive();
     await selectForYouFeed(page, {
       timeoutMs: runtimeOptions.stateTimeoutMs,
@@ -113,7 +116,10 @@ export async function runAuthorizedCollector({
       includeRawText: runtimeOptions.includeRawText,
       assertAuthenticatedAccount: async () => {
         assertPermissionActive();
-        await requireAuthenticatedAccount(page, authorized.configuredAccount);
+        await requireAuthenticatedAccount(page, authorized.configuredAccount, {
+          timeoutMs: runtimeOptions.stateTimeoutMs,
+          assertPermissionActive,
+        });
         assertPermissionActive();
       },
       assertPermissionActive,
