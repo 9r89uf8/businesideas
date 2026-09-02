@@ -32,6 +32,7 @@ const {
   parseXForYouCloudResult,
   readXForYouCloudActivation,
   resolveXForYouCloudActivation,
+  routeOneUseResultUrlThroughProductionAlias,
   sendXForYouCloudCollection,
   setXForYouCloudDependenciesForTests,
   startXForYouCloudInstance,
@@ -43,6 +44,10 @@ const INSTANCE_ID = "i-064c47109859601d1";
 const COMMAND_ID = "11111111-2222-4333-8444-555555555555";
 const RESULT_URL =
   "https://signal-foundry.example.com/.well-known/workflow/v1/webhook/lJHkuMdQ2FxSFTbUMU84k";
+const PROTECTED_DEPLOYMENT_RESULT_URL =
+  "https://admins-projects-d500137d-i9wby936o-admins-projects-d500137d.vercel.app/.well-known/workflow/v1/webhook/lJHkuMdQ2FxSFTbUMU84k";
+const PRODUCTION_RESULT_URL =
+  "https://admins-projects-d500137d.vercel.app/.well-known/workflow/v1/webhook/lJHkuMdQ2FxSFTbUMU84k";
 
 function activeEnv(overrides = {}) {
   return {
@@ -347,6 +352,35 @@ test("the webhook parser step accepts a safe terminal collector failure", async 
     errorCode: "MANUAL_ACTION_REQUIRED",
     candidates: [],
   });
+});
+
+test("protected deployment callbacks use the public production alias", async () => {
+  let sentCommand;
+  await withDependencies(
+    {
+      env: activeEnv(),
+      ssmSend: async (command) => {
+        sentCommand = command;
+        return { Command: { CommandId: COMMAND_ID } };
+      },
+    },
+    () =>
+      sendXForYouCloudCollection({
+        resultUrl: PROTECTED_DEPLOYMENT_RESULT_URL,
+      }),
+  );
+
+  const script = sentCommand.input.Parameters.commands[0];
+  assert.equal(script.includes(PRODUCTION_RESULT_URL), true);
+  assert.equal(script.includes(PROTECTED_DEPLOYMENT_RESULT_URL), false);
+  assert.equal(
+    routeOneUseResultUrlThroughProductionAlias(PROTECTED_DEPLOYMENT_RESULT_URL),
+    PRODUCTION_RESULT_URL,
+  );
+  assert.equal(
+    routeOneUseResultUrlThroughProductionAlias(RESULT_URL),
+    RESULT_URL,
+  );
 });
 
 test("result URLs are restricted to one-use HTTPS Workflow endpoints", () => {

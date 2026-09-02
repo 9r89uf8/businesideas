@@ -11,7 +11,7 @@ const SAFE_MEDIA_QUERY_PARAMETERS = Object.freeze({
   tag: /^\d{1,4}$/,
 });
 const MAX_ARTICLE_CANDIDATES_PER_CYCLE = 40;
-const ARTICLE_DOM_CALL_TIMEOUT_MS = 2_000;
+const ARTICLE_DOM_CALL_TIMEOUT_MS = 5_000;
 
 function articleDomTimeoutError() {
   const error = new Error("A bounded timeline DOM read did not complete.");

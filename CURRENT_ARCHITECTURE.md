@@ -254,6 +254,8 @@ The collector can:
 - append first-observed posts to local diagnostic JSONL; and
 - return at most 100 canonical numeric status IDs and first feed positions to
   the one-use Workflow webhook after browser and output handles are closed.
+  Its path is sent through the public production alias because Vercel protects
+  the deployment-specific hostname; this adds no callback secret or endpoint.
 
 Its action-policy module contains the complete mutable UI surface: fill the
 login identifier, optional username, and password; click Next, Log in, and
@@ -1546,7 +1548,7 @@ Private Supabase OAuth approval UI for the MCP client.
 | Optional For You runtime stop | 5 minutes by default, hard-capped at 15 minutes |
 | Optional For You load wait | 2.5 seconds by default |
 | Optional For You article candidates | 40 per collection cycle |
-| Optional For You timeline DOM watchdog | 2 seconds per bounded call |
+| Optional For You timeline DOM watchdog | 5 seconds per bounded call |
 | Optional For You browser operation deadline | 30 seconds for launch, actions, and navigation |
 | Optional For You browser-close confirmation | 15-second hard timeout; failure retains the profile lock |
 | Optional For You AWS secret envelope | 64 KiB maximum, retrieved through instance-role AWS CLI credentials |
@@ -1742,8 +1744,8 @@ volume is retained for the worker runtime. Secret-free source bundles are
 retained as encrypted, versioned objects under the bucket's `deployment/`
 prefix. SSM installation and disabled-configuration verification succeeded for
 bundle SHA-256
-`350b30906a770e0928610407a4908c11dfda725a2db1dffdc86abd91bf0c0b9b`
-(S3 version `2O91TCU4lYauOIhBTSw4TYHIRFTtyesC`). The instance was then confirmed
+`afaff7dcc0cc5b4a7fa1fdb5a9bba3a4d49c21a295f4a334ec7097a7f8d6f454`
+(S3 version `EotgHY9STqPmdOMRh6RCcNm8SoJu9iHo`). The instance was then confirmed
 `stopped`. Its persistent configuration contains no enabled authorization
 values, the systemd boot lease is active, the disabled check returned
 `FEATURE_DISABLED`, and no Chrome process or X request was part of

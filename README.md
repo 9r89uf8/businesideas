@@ -131,7 +131,9 @@ when X invalidates the saved session and requires a human sign-in or challenge.
 The cloud handoff is deliberately small:
 
 1. The Workflow checks the exact flag and approved-account configuration.
-2. When enabled, it creates one one-use Vercel Workflow webhook.
+2. When enabled, it creates one one-use Vercel Workflow webhook. The same
+   one-use path is routed through the public production alias so Vercel's
+   protected deployment hostname cannot intercept the worker callback.
 3. It starts the pinned EC2 instance through the AWS SDK and waits for both
    EC2 `running` and SSM `Online`.
 4. It sends one 20-minute SSM Run Command carrying the flag, approved account,
@@ -323,7 +325,7 @@ collection, reads only rendered articles intersecting the viewport, never
 clicks timeline content, and stops safely on verification, CAPTCHA, selector
 drift, external navigation, feed errors, session expiry, bounded runtime, or
 lack of feed growth. Each cycle inspects at most 40 article candidates, and an
-individual timeline DOM call has a two-second watchdog within the overall run
+individual timeline DOM call has a five-second watchdog within the overall run
 deadline. Context-wide routing blocks top-level navigation from the primary
 page or any popup before it can leave the approved workflow. Chrome runs
 headed with its Chromium sandbox enabled and explicit 30-second launch,

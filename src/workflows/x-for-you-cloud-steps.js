@@ -51,6 +51,10 @@ const PINNED_AWS_TARGET = Object.freeze({
 });
 const VERCEL_AWS_ROLE_ARN =
   "arn:aws:iam::563561751769:role/signal-foundry-vercel-x-for-you";
+const PRODUCTION_RESULT_HOSTNAME =
+  "admins-projects-d500137d.vercel.app";
+const PROTECTED_DEPLOYMENT_HOSTNAME_PATTERN =
+  /^admins-projects-d500137d-[a-z0-9-]+-admins-projects-d500137d\.vercel\.app$/;
 
 let testDependencies = null;
 
@@ -253,6 +257,17 @@ export function validateOneUseResultUrl(value) {
   return url.href;
 }
 
+export function routeOneUseResultUrlThroughProductionAlias(value) {
+  const validatedUrl = validateOneUseResultUrl(value);
+  const url = new URL(validatedUrl);
+
+  if (PROTECTED_DEPLOYMENT_HOSTNAME_PATTERN.test(url.hostname)) {
+    url.hostname = PRODUCTION_RESULT_HOSTNAME;
+  }
+
+  return validateOneUseResultUrl(url.href);
+}
+
 function shellQuote(value) {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
@@ -413,7 +428,7 @@ export async function sendXForYouCloudCollection({ resultUrl } = {}) {
 
   const config = resolveActiveCloudConfig();
   if (!config.enabled) return DISABLED_STATUS;
-  const validatedUrl = validateOneUseResultUrl(resultUrl);
+  const validatedUrl = routeOneUseResultUrlThroughProductionAlias(resultUrl);
   const command = buildCollectorShellCommand({
     approvedAccount: config.approvedAccount,
     resultUrl: validatedUrl,
