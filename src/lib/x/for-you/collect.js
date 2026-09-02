@@ -19,7 +19,10 @@ export const COLLECTION_STOP_REASONS = Object.freeze({
   MAXIMUM_SCROLLS: "MAXIMUM_SCROLLS",
   MAXIMUM_RUNTIME: "MAXIMUM_RUNTIME",
   NO_FEED_GROWTH: "NO_FEED_GROWTH",
+  SELECTOR_DRIFT: "SELECTOR_DRIFT",
 });
+
+const MINIMUM_PARTIAL_POSTS = 50;
 
 function boundedInteger(value, label, minimum, maximum) {
   if (!Number.isInteger(value) || value < minimum || value > maximum) {
@@ -140,15 +143,31 @@ export async function collectForYouPosts(
       assertAuthenticatedAccount,
     );
 
-    const visiblePosts = await extractVisiblePosts(page, {
-      includeRawText,
-      maximumPosts:
-        normalizedLimits.targetUniquePosts - postsById.size,
-      knownPostIds: postsById.keys(),
-      deadlineMs: startedAtMs + normalizedLimits.maximumRuntimeMs,
-      clock,
-      assertPermissionActive,
-    });
+    let visiblePosts;
+    try {
+      visiblePosts = await extractVisiblePosts(page, {
+        includeRawText,
+        maximumPosts:
+          normalizedLimits.targetUniquePosts - postsById.size,
+        knownPostIds: postsById.keys(),
+        deadlineMs: startedAtMs + normalizedLimits.maximumRuntimeMs,
+        clock,
+        assertPermissionActive,
+      });
+    } catch (error) {
+      const partialThreshold = Math.min(
+        MINIMUM_PARTIAL_POSTS,
+        normalizedLimits.targetUniquePosts,
+      );
+      if (
+        error?.code === "SELECTOR_DRIFT" &&
+        postsById.size >= partialThreshold
+      ) {
+        stopReason = COLLECTION_STOP_REASONS.SELECTOR_DRIFT;
+        break;
+      }
+      throw error;
+    }
     let addedThisCycle = 0;
 
     for (const post of visiblePosts) {

@@ -200,8 +200,10 @@ function createCollectionPage({
       if (selector === 'main article[data-testid="tweet"]') {
         return {
           async count() {
-            activePosts = cycles[cycleIndex] ?? cycles.at(-1) ?? [];
+            const cycle = cycles[cycleIndex] ?? cycles.at(-1) ?? [];
             cycleIndex += 1;
+            if (cycle instanceof Error) throw cycle;
+            activePosts = cycle;
             return activePosts.length;
           },
           nth(index) {
@@ -619,6 +621,59 @@ test("collection reports each bounded scroll stop condition", async (t) => {
       { event: "NO_FEED_GROWTH", fields: { noGrowthCycles: 2 } },
     ]);
   });
+});
+
+test("selector drift preserves a safe 50-post partial collection", async () => {
+  const selectorDrift = new Error("synthetic timeline timeout");
+  selectorDrift.code = "SELECTOR_DRIFT";
+  const page = createCollectionPage({
+    cycles: [
+      Array.from({ length: 40 }, (_, index) => rawPost(index + 1)),
+      Array.from({ length: 10 }, (_, index) => rawPost(index + 41)),
+      selectorDrift,
+    ],
+  });
+
+  const result = await collectForYouPosts(page, {
+    limits: {
+      targetUniquePosts: 100,
+      maximumScrolls: 5,
+      maximumNoGrowthCycles: 3,
+      maximumRuntimeMs: 10_000,
+      loadWaitMs: 250,
+    },
+    clock: () => OBSERVED_AT,
+  });
+
+  assert.equal(result.stopReason, COLLECTION_STOP_REASONS.SELECTOR_DRIFT);
+  assert.equal(result.posts.length, 50);
+  assert.equal(result.scrollCycles, 2);
+});
+
+test("selector drift still fails below the safe partial threshold", async () => {
+  const selectorDrift = new Error("synthetic timeline timeout");
+  selectorDrift.code = "SELECTOR_DRIFT";
+  const page = createCollectionPage({
+    cycles: [
+      Array.from({ length: 40 }, (_, index) => rawPost(index + 1)),
+      Array.from({ length: 9 }, (_, index) => rawPost(index + 41)),
+      selectorDrift,
+    ],
+  });
+
+  await assert.rejects(
+    collectForYouPosts(page, {
+      limits: {
+        targetUniquePosts: 100,
+        maximumScrolls: 5,
+        maximumNoGrowthCycles: 3,
+        maximumRuntimeMs: 10_000,
+        loadWaitMs: 250,
+      },
+      clock: () => OBSERVED_AT,
+    }),
+    (error) => error === selectorDrift,
+  );
 });
 
 test("scroll limit normalization enforces the collector's hard bounds", () => {

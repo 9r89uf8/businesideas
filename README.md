@@ -326,7 +326,9 @@ clicks timeline content, and stops safely on verification, CAPTCHA, selector
 drift, external navigation, feed errors, session expiry, bounded runtime, or
 lack of feed growth. Each cycle inspects at most 40 article candidates, and an
 individual timeline DOM call has a five-second watchdog within the overall run
-deadline. Context-wide routing blocks top-level navigation from the primary
+deadline. A later selector timeout preserves the already collected IDs only
+after at least 50 unique posts; below that threshold it remains a failed run.
+Context-wide routing blocks top-level navigation from the primary
 page or any popup before it can leave the approved workflow. Chrome runs
 headed with its Chromium sandbox enabled and explicit 30-second launch,
 action, and navigation deadlines. Interactive challenge mode only waits for
