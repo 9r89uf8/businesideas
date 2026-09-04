@@ -1,4 +1,5 @@
 import Link from "next/link";
+import ModelDecisions from "@/components/model-decisions";
 import { requireOwner } from "@/lib/auth";
 import { POST_QUALITY } from "@/lib/config";
 
@@ -6,7 +7,7 @@ export const metadata = { title: "Source feed" };
 export const dynamic = "force-dynamic";
 
 const SOURCE_FILTERS = new Set(["all", "followed", "topic", "for_you"]);
-const VIEW_FILTERS = new Set(["all", "selected", "signals"]);
+const VIEW_FILTERS = new Set(["all", "selected", "signals", "shortlisted"]);
 const VIEW_FLOOR_RANKING_VERSIONS = new Set(["views_v3", POST_QUALITY.version]);
 
 function clean(value, maximum = 100) {
@@ -52,7 +53,7 @@ function sourceBadgeClass(channel) {
   return "bg-[var(--ink)]/7 text-[var(--ink-soft)]";
 }
 
-function PostCard({ snapshot, rankingVersion, minimumViews }) {
+function PostCard({ snapshot, rankingVersion, minimumViews, run, decisionsError }) {
   const post = snapshot.post;
   const metrics = snapshot.metrics || {};
   const qualityMetrics = [
@@ -95,6 +96,11 @@ function PostCard({ snapshot, rankingVersion, minimumViews }) {
           (!snapshot.filter_decision && snapshot.relevant === true)) && (
           <span className="rounded-full bg-[var(--moss)]/10 px-2.5 py-1 text-[0.68rem] font-bold text-[var(--moss)]">
             Kept for ideation
+          </span>
+        )}
+        {snapshot.shortlisted && (
+          <span className="rounded-full bg-[var(--moss)]/10 px-2.5 py-1 text-[0.68rem] font-bold text-[var(--moss)]">
+            Shortlisted
           </span>
         )}
         {snapshot.filter_decision === "needs_context" && (
@@ -176,6 +182,17 @@ function PostCard({ snapshot, rankingVersion, minimumViews }) {
           </div>
         )}
 
+        {snapshot.shortlisted && (
+          <ModelDecisions
+            snapshot={snapshot}
+            candidateResult={snapshot.candidate_result}
+            runStatus={run?.status}
+            runStage={run?.stage}
+            shortlistSkipped={run?.counts?.shortlist_skipped === true}
+            loadError={decisionsError}
+          />
+        )}
+
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-3 text-[0.68rem] text-[var(--ink-soft)]">
           <span>{snapshot.source_channel === "for_you" ? "Feed" : "Search"} position {snapshot.search_position ?? "—"}</span>
           <span>{usesVersionedViewFloor ? `${viewFloor}-qualified score` : usesViewFirstRanking ? "View-first score" : "Legacy score"} {Number.isFinite(snapshot.deterministic_score) ? snapshot.deterministic_score.toFixed(2) : "—"}</span>
@@ -205,11 +222,12 @@ export default async function PostsPage({ searchParams }) {
   const selectedRun = runList.find((run) => run.id === requestedRun) || runList[0] || null;
   let snapshots = [];
   let pageError = runsError;
+  let decisionsError = false;
 
   if (selectedRun && !pageError) {
     let snapshotQuery = supabase
       .from("run_posts")
-      .select("post_id, search_position, metrics, deterministic_score, selected_for_ai, source_channel, relevant, signal_type, target_customer, signal_summary, filter_decision, filter_reason, commercial_element")
+      .select("post_id, search_position, metrics, deterministic_score, selected_for_ai, source_channel, relevant, signal_type, target_customer, signal_summary, filter_decision, filter_reason, commercial_element, hydrated_context, shortlist_assessment")
       .eq("owner_id", ownerId)
       .eq("run_id", selectedRun.id);
 
@@ -226,14 +244,45 @@ export default async function PostsPage({ searchParams }) {
     snapshots = snapshotResult.data || [];
 
     if (snapshots.length && !pageError) {
-      const { data: posts, error: postsError } = await supabase
-        .from("posts")
-        .select("x_post_id, author_username, text, url, x_created_at, availability")
-        .eq("owner_id", ownerId)
-        .in("x_post_id", snapshots.map((snapshot) => snapshot.post_id));
-      pageError = postsError;
-      const postsById = new Map((posts || []).map((post) => [post.x_post_id, post]));
-      snapshots = snapshots.map((snapshot) => ({ ...snapshot, post: postsById.get(snapshot.post_id) || null }));
+      const postIds = snapshots.map((snapshot) => snapshot.post_id);
+      const [postsResult, decisionsResult] = await Promise.allSettled([
+        supabase
+          .from("posts")
+          .select("x_post_id, author_username, text, url, x_created_at, availability")
+          .eq("owner_id", ownerId)
+          .in("x_post_id", postIds),
+        supabase
+          .from("clusters")
+          .select("source_post_id, candidate_result")
+          .eq("owner_id", ownerId)
+          .eq("run_id", selectedRun.id)
+          .eq("eligible", true)
+          .in("source_post_id", postIds),
+      ]);
+      pageError = postsResult.status === "fulfilled"
+        ? postsResult.value.error
+        : true;
+      decisionsError = decisionsResult.status === "rejected" ||
+        Boolean(decisionsResult.value.error);
+      const posts = postsResult.status === "fulfilled"
+        ? postsResult.value.data || []
+        : [];
+      const decisions = decisionsError ? [] : decisionsResult.value.data || [];
+      const postsById = new Map(posts.map((post) => [post.x_post_id, post]));
+      const decisionsByPostId = new Map(
+        decisions.map((decision) => [decision.source_post_id, decision]),
+      );
+      snapshots = snapshots.map((snapshot) => ({
+        ...snapshot,
+        post: postsById.get(snapshot.post_id) || null,
+        shortlisted: decisionsByPostId.has(snapshot.post_id) ||
+          snapshot.shortlist_assessment?.advanced === true ||
+          snapshot.shortlist_assessment?.decision === "advance",
+        candidate_result: decisionsByPostId.get(snapshot.post_id)?.candidate_result || null,
+      }));
+      if (view === "shortlisted") {
+        snapshots = snapshots.filter((snapshot) => snapshot.shortlisted);
+      }
     }
   }
 
@@ -291,6 +340,7 @@ export default async function PostsPage({ searchParams }) {
             <option value="all">All retrieved (includes rejected)</option>
             <option value="selected">Sent to post filter</option>
             <option value="signals">Filter survivors</option>
+            <option value="shortlisted">Shortlisted posts</option>
           </select>
         </label>
         <button className="focus-ring self-end rounded-xl bg-[var(--ink)] px-4 py-2.5 text-sm font-bold text-white">Filter</button>
@@ -335,13 +385,15 @@ export default async function PostsPage({ searchParams }) {
           The source feed could not be loaded. Confirm the latest additive Supabase migration has been applied.
         </section>
       ) : snapshots.length ? (
-        <section className="mt-4 grid gap-4 lg:grid-cols-2">
+        <section className="mt-4 grid items-start gap-4 lg:grid-cols-2">
           {snapshots.map((snapshot) => (
             <PostCard
               key={snapshot.post_id}
               snapshot={snapshot}
               rankingVersion={selectedRun?.settings_snapshot?.ranking_version}
               minimumViews={minimumViews}
+              run={selectedRun}
+              decisionsError={decisionsError}
             />
           ))}
         </section>

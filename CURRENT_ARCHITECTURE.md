@@ -1406,6 +1406,18 @@ includes prepared API research, active research, and final validation.
 Collected-post inspection, including X link, text while retained, source lane,
 captured engagement, ranking, and analysis state.
 
+Shortlisted posts have an expandable Model decisions panel containing the
+saved Sol candidate or no-viable-idea result, decision reason, three concepts
+and critiques, and selected idea details. It also shows the shortlist
+assessment and available Luna context/filter decisions. Automatic shortlist
+advancement is labeled explicitly without presenting its placeholder score
+as a model assessment. A Shortlisted posts filter limits the feed to these
+posts. Candidate results are read by owner, run, and source post through the
+owner's RLS-protected Supabase client; a candidate-query failure leaves the
+source feed available and marks the panel unavailable. Missing results are
+shown as pending only while the run can still generate them, otherwise as no
+saved response. The panel does not infer research or publication decisions.
+
 ### `/ideas`
 
 Published idea archive with filters and evidence summaries.
