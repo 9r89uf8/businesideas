@@ -549,6 +549,17 @@ collection and shuts down immediately on command exit; the Workflow also
 requests `StopInstances` in its `finally` path. A systemd timer independently
 stops the machine 25 minutes after each boot if both application paths fail.
 
+The command watchdog performs at most 119 status checks, with a 10-second
+durable sleep before each check and a 30-second callback grace period after a
+terminal command or exhausted polling. Callback arrival, or entry to cleanup,
+sets its stop flag. Cleanup awaits the already-running watchdog sleep or status
+step before requesting EC2 shutdown and disposing the webhook. It does not
+cancel a durable sleep instantly: completion can wait for the remainder of the
+current 10- or 30-second sleep, or for the in-flight status step. Once stopped,
+the watchdog starts no more polls or grace sleeps, including when the 119th
+status check rejects as a callback arrives. Cleanup errors do not discard an
+already accepted callback; the existing SSM/systemd shutdown backstops remain.
+
 The callback records are only discovery candidates. Before lookup,
 `fetchAndRank` queries the owner's canonical `posts` rows and removes every ID
 already stored through any source lane. It then hydrates only unseen IDs through
@@ -1694,8 +1705,10 @@ complete [`worker-prompt.md`](./integrations/chatgpt-cloud-ideation/worker-promp
 the installed Supabase plugin, GPT-5.6 Sol High requested, and an hourly
 interval. Each scheduled parent must spawn one new worker child using
 `fork_turns: "none"`, the explicit Sol model and High reasoning. Only that child
-claims and processes one job. The parent waits for its sanitized job ID/status
-and never reads payloads or uses SQL; it uses no local project or local files.
+claims and processes one job. The currently saved parent receives only its
+sanitized job ID/status; the repository prompt revision adds controlled failure
+diagnostics and is awaiting approval before testing and saving. The parent
+never reads payloads or uses SQL; it uses no local project or local files.
 Eligible paid ChatGPT schedules support recurrence up to once per hour; the
 five-minute configuration was not created. See the
 [official task frequency limits](https://help.openai.com/en/articles/10291617-tasks-in-chatgpt).
@@ -2049,6 +2062,15 @@ Secrets must never be copied into browser code, source control, logs, X
 queries, research payloads, schedule prompts, or plugin skill text.
 
 ## 24. Local development and verification
+
+On September 5, 2026, the watchdog fix passed all 352 automated tests and the
+production build. Its 13 new timer regressions cover callback arrival before or
+during a durable sleep/status check, terminal-command grace, bounded timeout,
+the final rejected status check, parsing failures and cleanup failures. They
+assert no watchdog sleep or status check survives into EC2 shutdown/webhook
+disposal, while preserving accepted callback results. This is local code/build
+verification; it does not establish deployment of that revision or test the
+separate scheduled-worker diagnostic prompt.
 
 Use Node.js 20.12 or newer.
 
@@ -2406,10 +2428,33 @@ The saved hourly parent prompt creates exactly one child with
 `collaboration.spawn_agent`, a unique task name, `fork_turns: "none"`,
 `model: "gpt-5.6-sol"` and `reasoning_effort: "high"`. It passes the complete
 self-contained worker contract without parent chat history, waits for completion
-or attention, and receives only a sanitized job ID and status. The parent does
+or attention. The currently saved production prompt returns only job ID/status.
+The repository revision adds a controlled diagnostic for `failed` or
+`attention_required`, pending approval, offline evaluation and a schedule update.
+The parent does
 not read payloads, evaluate posts or call SQL. It cannot reuse or follow up with
 a child; unavailable or denied isolated spawning stops the execution rather
 than falling back to direct SQL or inherited context.
+
+The repository prompt defines diagnostics with a controlled stage/reason code,
+exact prewritten explanation, evidence category and explicit retryability when
+known (otherwise `null`). An observed HTTP status and tool identifier are the
+only optional additions; the complete report is capped at 1,000 characters.
+Raw errors, SQL, model/source payloads, claim capabilities, credentials and
+child reasoning cannot be forwarded. A specific denial or tool-unavailability
+claim requires an actual tool/runtime observation; model inference remains
+`unknown`. These diagnostic labels are worker-reported, not independently
+attested runtime evidence.
+
+The parent retains failed/attention reports in the scheduled ChatGPT response,
+even if Supabase is unavailable. Its own spawn/wait failures use the same
+contract; an invalid or missing child report becomes `child_response_invalid`
+instead of exposing the unsafe output. No extra logging RPC, permission or
+fallback is added. Empty/successful runs stay quiet. An unconfirmed claim cannot
+be retried, and a submission still unconfirmed after its one identical retry
+must not be followed by a failure RPC. `failed` denotes an acknowledged failure
+report, which may release the queue job for a later attempt rather than mark
+it terminal.
 
 The isolated child uses the installed administrative Supabase plugin's
 `execute_sql` tool. Its saved prompt permits only these three invoker RPCs:
@@ -2559,6 +2604,18 @@ Browser verification showed a Validated shortlist, zero of eight generation
 responses validated, eight waiting to start, and the stored shortlist rationale
 and score visible for `@bot`.
 
-The remaining candidate/research work and complete primary batch publication
-remain pending under the hourly schedule. The shadow execution above remains
+At that initial cutover checkpoint, the remaining candidate/research work and
+complete primary batch publication were pending under the hourly schedule. The shadow execution above remains
 historical evidence and is not relabeled as a primary run.
+
+### Scheduled-worker diagnostic revision: September 5, 2026 UTC
+
+Two reported pre-claim failures retained only job ID/status, leaving their
+underlying causes unestablished. The repository worker prompt now includes the
+bounded failure contract above so failures before database access can remain
+reviewable in ChatGPT. Automatic approval review blocked uploading the revised
+prompt into the manual offline fixture chat. Explicit user approval is pending;
+the fixture has not run and the revised prompt has not been saved to the active
+schedule. The earlier saved-prompt and live pipeline verification records
+describe the previous two-field output contract. No new database logging,
+permissions or tool access was added by this documentation/prompt revision.

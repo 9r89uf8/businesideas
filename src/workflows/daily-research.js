@@ -66,9 +66,11 @@ function optionalForYouCallbackResult(result) {
   });
 }
 
-async function waitForForYouCommand(commandId) {
+async function waitForForYouCommand(commandId, watchdog) {
   for (let poll = 0; poll < FOR_YOU_COMMAND_POLLS; poll += 1) {
+    if (watchdog.stopped) return { status: "stopped" };
     await sleep("10s");
+    if (watchdog.stopped) return { status: "stopped" };
     let command;
     try {
       command = await inspectXForYouCloudCommand({ commandId });
@@ -78,6 +80,7 @@ async function waitForForYouCommand(commandId) {
       // wait alive and let the webhook side of the race win when available.
       continue;
     }
+    if (watchdog.stopped) return { status: "stopped" };
     if (["failed", "succeeded"].includes(command.status)) {
       // A callback may have been accepted even when the worker lost the HTTP
       // response and SSM reports failure. Keep the race alive briefly for any
@@ -89,6 +92,7 @@ async function waitForForYouCommand(commandId) {
     }
   }
   // The final status poll and an accepted webhook can cross in flight too.
+  if (watchdog.stopped) return { status: "stopped" };
   await sleep("30s");
   return { status: "timeout" };
 }
@@ -110,10 +114,12 @@ async function collectOptionalForYouCandidates() {
   } catch {
     return optionalForYouResult();
   }
-  const webhookResult = webhook.then((request) => ({
-    status: "received",
-    request,
-  }));
+  const watchdog = { stopped: false };
+  let commandWait;
+  const webhookResult = webhook.then((request) => {
+    watchdog.stopped = true;
+    return { status: "received", request };
+  });
 
   try {
     const started = await startXForYouCloudInstance();
@@ -138,9 +144,10 @@ async function collectOptionalForYouCandidates() {
     });
     if (sent.status !== "sent") return optionalForYouResult();
 
+    commandWait = waitForForYouCommand(sent.commandId, watchdog);
     const event = await Promise.race([
       webhookResult,
-      waitForForYouCommand(sent.commandId),
+      commandWait,
     ]);
     if (event.status !== "received") return optionalForYouResult();
     const result = await parseXForYouCloudResult(event.request);
@@ -148,6 +155,14 @@ async function collectOptionalForYouCandidates() {
   } catch {
     return optionalForYouResult();
   } finally {
+    // Promise.race does not cancel its loser. Stop scheduling watchdog work and
+    // drain its current durable sleep/status step before this collection ends.
+    watchdog.stopped = true;
+    try {
+      await commandWait;
+    } catch {
+      // Watchdog cleanup must not discard an already accepted callback.
+    }
     try {
       await stopXForYouCloudInstance({
         region: activation.region,
@@ -157,7 +172,11 @@ async function collectOptionalForYouCandidates() {
       // The optional lane must not block the official-API research path; the
       // EC2 boot lease remains the final shutdown backstop.
     } finally {
-      webhook.dispose();
+      try {
+        webhook.dispose();
+      } catch {
+        // A terminal workflow also disposes hooks; preserve the collection result.
+      }
     }
   }
 }

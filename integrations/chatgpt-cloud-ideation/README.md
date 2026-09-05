@@ -25,10 +25,31 @@ execution calls `collaboration.spawn_agent` once with a unique task name,
 `fork_turns: "none"`, `model: "gpt-5.6-sol"` and `reasoning_effort: "high"`.
 Its message contains the complete self-contained child task from the prompt,
 without parent history or prior jobs. The child claims and processes one job,
-then returns only its sanitized job ID and status. The parent waits for completion
+then returns its sanitized job ID/status and, in this repository revision, a
+controlled diagnostic on failure. The active schedule still has the previous
+two-field-only prompt; the diagnostic revision awaits approval before testing
+and saving.
+The parent waits for completion
 or attention, never reads payloads or uses SQL, and never reuses or follows up
 with a child. If isolated spawning is unavailable or denied, the task stops;
 there is no direct-SQL or inherited-context fallback.
+
+The prompt's canonical failure report adds `diagnostic` with a controlled
+stage, reason code, exact prewritten explanation, evidence category and known
+retryability (otherwise `null`). Only an actually observed HTTP status or tool
+identifier may be added. The report is capped at 1,000 characters and contains
+no raw errors, SQL, source/model payloads, claim IDs, credentials or child
+reasoning. Specific denial/unavailability codes require an observed tool or
+runtime result; model inference uses `unknown`. These are worker-reported
+diagnostics, not independent runtime attestations.
+
+The parent preserves every safe failure in its scheduled ChatGPT response,
+including child-spawn/wait errors and invalid or missing child reports. This
+does not depend on Supabase being reachable or on an extra database write.
+Successful and empty executions remain quiet. A lost claim reply never causes
+a second claim; an unconfirmed submission after the one permitted identical
+retry never causes a failure RPC. `failed` means the failure RPC acknowledged
+a report, not necessarily that the queue job became terminal.
 For the primary cutover, apply the primary publication migration and validate
 the application deployment, then save this exact updated prompt in the existing
 hourly schedule before its first primary claim. Its parent and isolated child
@@ -109,6 +130,15 @@ Both cloud and source runs were `running / generating`, with exactly eight
 candidate jobs pending. Browser verification showed the validated shortlist,
 eight waiting generations and the saved decision rationale/score. All Sol API
 checkpoints remained zero, usage remained only `luna_filter`, and published
-ideas remained two. The remaining hourly candidate/research work and complete
-primary publication are pending; deployment, schedule save, the shared-Luna
+ideas remained two. At that initial cutover checkpoint, the remaining hourly
+candidate/research work and complete primary publication were pending;
+deployment, schedule save, the shared-Luna
 handoff and the first primary cloud model response are verified.
+
+On September 5, 2026, the repository prompt was extended with these safe failure
+diagnostics after two reported pre-claim failures exposed only job ID/status.
+Their underlying causes were not established by those reports. The diagnostic
+prompt upload to a manual offline fixture chat was blocked by automatic approval
+review and awaits explicit user approval. The fixture has not run, and the
+active schedule has not received this diagnostic revision. The existing
+two-field report remains the saved production contract.
