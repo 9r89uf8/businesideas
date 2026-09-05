@@ -90,8 +90,8 @@ export function createCloudIdeationService({ db, embedTexts, now = () => new Dat
   }
 
   async function enqueue(run, kind, jobKey, payload, sourcePostId = null) {
-    const requestedReasoning = kind === "shortlist" ? PIPELINE.reasoning.shortlist
-      : kind === "candidate" ? PIPELINE.reasoning.generation : PIPELINE.reasoning.research;
+    // The cloud worker explicitly starts a fresh Sol High child for every kind.
+    const requestedReasoning = PIPELINE.reasoning.generation;
     const { error } = await db.from("cloud_model_jobs").upsert({
       cloud_run_id: run.id, owner_id: run.owner_id, job_key: jobKey,
       kind, source_post_id: sourcePostId, payload, status: "pending",

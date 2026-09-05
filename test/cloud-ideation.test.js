@@ -264,6 +264,8 @@ test("cloud shortlist choices, rather than API shortlist checkpoints, drive gene
   await store.service.advanceCloudIdeationRun({ runId: RUN, ownerId: OWNER });
   const shortlist = store.tables.cloud_model_jobs[0];
   assert.equal(shortlist.kind, "shortlist");
+  assert.equal(shortlist.requested_model, "gpt-5.6-sol");
+  assert.equal(shortlist.requested_reasoning, "high");
   assert.doesNotMatch(shortlist.payload.input, /shortlist_assessment/);
   submit(shortlist, {
     assessments: ids.map((id) => ({

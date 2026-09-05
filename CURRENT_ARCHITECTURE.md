@@ -1616,8 +1616,10 @@ Apply the cloud migration and deploy the coordinator, queue integration and
 owner route. Configure a standalone **ChatGPT Work cloud schedule** with the
 complete [`worker-prompt.md`](./integrations/chatgpt-cloud-ideation/worker-prompt.md),
 the installed Supabase plugin, GPT-5.6 Sol High requested, and an hourly
-interval. Each scheduled execution must start a fresh chat, claim at most one
-job and stop after that job; it uses no local project or local files.
+interval. Each scheduled parent must spawn one new worker child using
+`fork_turns: "none"`, the explicit Sol model and High reasoning. Only that child
+claims and processes one job. The parent waits for its sanitized job ID/status
+and never reads payloads or uses SQL; it uses no local project or local files.
 Eligible paid ChatGPT schedules support recurrence up to once per hour; the
 five-minute configuration was not created. See the
 [official task frequency limits](https://help.openai.com/en/articles/10291617-tasks-in-chatgpt).
@@ -1625,13 +1627,23 @@ A complete batch can require ten separate hourly executions: one shortlist,
 up to eight candidate jobs and one research job. The coordinator's 24-hour
 deadline allows for scheduling delay and some retries.
 
-The recurring schedule configuration and the complete shortlist-to-research
-comparison are **pending live verification**. The one-time plugin test recorded
-below is narrower evidence and does not establish that this new schedule is
-active. Verify an eligible retained run through Run cloud comparison, then
-confirm separate shortlist/candidate/research responses, trusted final checks,
-comparison-only storage and unchanged API publication. The instructions and
-connection requirements are in the
+The hourly [Signal Foundry cloud worker](https://chatgpt.com/scheduled/6a9b6225d5048191903c994bc0b91d55)
+is active, and its first automatic execution claimed and submitted a real
+shortlist that the server validated. All eight candidate jobs have completed
+server validation, and the coordinator selected three for research. The exact
+parent/child prompt is saved and persisted after reloading the schedule UI.
+Research launched through Run now completed in the isolated child; the server
+validated one shadow idea and eight sources. All ten queue jobs completed,
+and the Source feed displayed the final comparison correctly. This verifies
+the automatic shortlist, manually accelerated candidates and saved-schedule
+research path, not a batch of ten elapsed hourly executions. Section 30 records
+the deployment and test evidence. The child boundary uses explicit
+`fork_turns: "none"` rather than relying on the scheduled parent having fresh
+context: Open chat still points to its setup conversation, and the UI does not
+expose complete background context. Model runtime identity remains unverified,
+and research source access remains worker-reported. Comparison-only storage
+and unchanged API publication were verified. The instructions and connection
+requirements are in the
 [`cloud integration README`](./integrations/chatgpt-cloud-ideation/README.md).
 API provider cutover remains a separate change after reviewing those results.
 
@@ -2236,7 +2248,7 @@ context, then makes an independent commercial selection:
 ```text
 Shared Luna survivors and resolved context
   -> independent cloud shortlist (at most 8; automatic when 8 or fewer survive)
-  -> one cloud candidate job per post, each in a fresh scheduled chat
+  -> one cloud candidate job per post, assigned to a new child with fork_turns: none
   -> trusted schema/source validation, score ordering and duplicate checks
   -> immutable top-3 research payload
   -> one cloud research job with public-web sources
@@ -2247,8 +2259,9 @@ Shared Luna survivors and resolved context
 The payloads reuse the existing shortlist, candidate-generation and research
 prompts and schemas. A candidate job receives exactly one source post, its
 resolved context and saved product preferences; the worker must consider three
-concepts and return a candidate or `no_viable_idea`. The requested settings are
-Sol Medium for shortlisting and Sol High for generation/research. Cloud Work
+concepts and return a candidate or `no_viable_idea`. The current enqueue code
+requests Sol High for all new cloud jobs: shortlist, candidate and research.
+The saved worker prompt also requests Sol High for every child. Cloud Work
 schedule/model requests and worker-reported metadata do not establish the
 actual model or reasoning used; runtime identity remains unverified. Source
 access is worker-reported rather than attested by an API response trace. Luna
@@ -2281,8 +2294,17 @@ unchanged.
 Unique job keys, immutable inputs and conditional checkpoint updates make
 dispatch/processing retries recoverable without replacing accepted model output.
 
-The worker uses the installed administrative Supabase plugin's `execute_sql`
-tool. Its saved prompt permits only these three invoker RPCs:
+The saved hourly parent prompt creates exactly one child with
+`collaboration.spawn_agent`, a unique task name, `fork_turns: "none"`,
+`model: "gpt-5.6-sol"` and `reasoning_effort: "high"`. It passes the complete
+self-contained worker contract without parent chat history, waits for completion
+or attention, and receives only a sanitized job ID and status. The parent does
+not read payloads, evaluate posts or call SQL. It cannot reuse or follow up with
+a child; unavailable or denied isolated spawning stops the execution rather
+than falling back to direct SQL or inherited context.
+
+The isolated child uses the installed administrative Supabase plugin's
+`execute_sql` tool. Its saved prompt permits only these three invoker RPCs:
 
 - `claim_cloud_model_job`: atomically claim one available owner-scoped job;
 - `submit_cloud_model_job`: save the result under its exact job/claim capability;
@@ -2309,3 +2331,74 @@ to erase run inputs and job payloads for terminal comparisons created at least
 48 hours earlier. Responses, assessments and reports remain available for
 comparison. This cleanup is opportunistic, not a separate timer. Operator
 schedule setup and the current verification status are recorded in section 22.
+
+### Live deployment and verification checkpoint: September 5, 2026 UTC
+
+Commit `255653aea30f455fead054afd743d9062bded0cb` was deployed as Vercel
+deployment `9KtfVACrVjqskwfWG4Jps53ttnaS`, which reached `READY`. Both cloud
+migrations were applied, with database versions `20260904235628` and
+`20260905001502`.
+
+The retained-run comparison `69245cd0-67be-48f6-8c50-9ec615abbd3c` started
+Workflow `wrun_01M1QEZP3BNF9TDT2B6MX2YWKY` with the exact 24-hour deadline
+`2026-09-06T00:20:06.832363Z`. The active hourly **Signal Foundry cloud worker**
+was created through the Scheduled Work UI. Its first automatic execution
+claimed the real shortlist at `00:34:22 UTC` and submitted it at
+`00:36:00.371477 UTC`; the server validated all 26 assessments and eight
+advanced post IDs, then queued eight individual candidate jobs. This verifies
+automatic scheduling, plugin access, a real queue claim/submission and trusted
+shortlist validation.
+This historical shortlist job retained its original requested Medium reasoning;
+it was created before enqueue code changed all new cloud jobs to High.
+Its immutable request metadata is preserved.
+
+The schedule's setup conversation is `6a9b61f0-bb9c-83e8-a1c5-38fa9d6cffc0`.
+Its Open chat action still opens that conversation, and the UI does not reveal
+the complete context supplied to a background parent execution. The updated
+prompt therefore creates an explicit child with `fork_turns: "none"` for each
+job instead of depending on scheduler-level context isolation. Selecting Sol
+High and saving per-job model requests provides no runtime model attestation.
+
+The earlier in-chat **Signal Foundry cloud ideation** schedule is paused. Its
+Run now attempt reported inherited setup context; automatic approval review
+blocked the claim, and that attempt made no database mutation. It is separate
+from the active worker above.
+
+All eight candidate jobs completed server validation during the manual cloud
+Work checks. The final candidate was claimed and submitted by a new child with
+`fork_turns: "none"` and the requested Sol High settings. The coordinator ranked
+the accepted candidates and selected the top three for research. These manual
+candidate executions do not establish that an entire batch has completed
+through the hourly schedule.
+
+The exact parent/child worker prompt was saved in the active schedule, then
+verified to persist after reloading the UI. At approximately `01:11 UTC`, Run
+now was triggered to process research job
+`d1f056f1-4fe1-4e46-9652-c8f3c0a0cdac` through the isolated child. The job was
+claimed by `01:13 UTC` and submitted at `2026-09-05T01:15:00.697509Z`. The
+scheduled parent UI reported 3 minutes 52 seconds of work and child completion.
+The server then completed trusted research validation and the comparison.
+
+Independent read-only database verification confirmed `status = completed`,
+`phase = done`, and all ten jobs completed: one shortlist, eight candidate jobs
+and one research job. The final flow was 26 source posts, eight generated
+candidates, three research candidates and one validated shadow idea with eight
+research sources. Seven recorded exclusions comprised five
+`pre_research / outside_top_three` and two `research / research_omitted` results;
+there were zero generation failures and zero `no_viable_idea` outcomes. The
+final report retained `published = false`.
+
+The Source feed showed Comparison complete, Research Validated and eight of
+eight generations validated. Its final idea, **DocTask CI — Outcome Tests for
+Agent-Readable Documentation**, and all eight sources rendered correctly when
+expanded. The verified test combined an automatic shortlist, manually
+accelerated candidate jobs and research launched through the updated schedule's
+Run now control. It does not claim ten fully hourly executions. All 324
+automated tests and the production build also passed.
+
+The original API run's verification hash remained
+`b993eb92e7f66c19ad9daab326f70114`, and the owner's published idea count remained
+two, both exactly matching the pre-comparison baseline. The production API
+path remained enabled and authoritative. The completed comparison did not
+publish its idea or alter the API run. Runtime model identity remains
+unverified, and source access remains worker-reported.
