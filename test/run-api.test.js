@@ -146,6 +146,7 @@ function createScriptedAdmin(responses) {
 function baseStartResponses(insertResponse, activeRuns = []) {
   return [
     { data: activeRuns, error: null },
+    ...(activeRuns.length ? [{ data: [], error: null }] : []),
     { data: null, error: null },
     insertResponse,
   ];
@@ -166,6 +167,7 @@ function runRecord(overrides = {}) {
 
 test("buildEffectiveSettings applies safe defaults and operating caps", () => {
   const defaults = buildEffectiveSettings(null);
+  assert.equal(defaults.ideation_provider, "chatgpt_cloud");
   assert.equal(defaults.candidate_limit, 100);
   assert.equal(defaults.ai_input_limit, 100);
   assert.equal(defaults.ranking_version, "views_v4");
@@ -307,7 +309,18 @@ test("startRun reports a newly dispatched manual run explicitly", async () => {
     72 * 60 * 60 * 1_000,
   );
   assert.equal(insertedRun.settings_snapshot.minimum_views, 19_000);
+  assert.equal(insertedRun.settings_snapshot.ideation_provider, "chatgpt_cloud");
   admin.assertExhausted();
+});
+
+test("primary cloud runs use their deadline instead of the legacy six-hour limit", () => {
+  const run = { id: RUN_ID, status: "running", stage: "generating", started_at: "2026-09-05T00:00:00Z" };
+  const cloud = { id: RUN_ID, mode: "primary", status: "pending", deadline_at: "2026-09-06T00:20:00Z" };
+  const afterTwentyHours = Date.parse("2026-09-05T20:00:00Z");
+  assert.equal(isStaleRun(run, afterTwentyHours, cloud), false);
+  assert.equal(isStaleRun(run, Date.parse(cloud.deadline_at), cloud), true);
+  assert.equal(isStaleRun(run, afterTwentyHours, { ...cloud, mode: "shadow" }), true);
+  assert.equal(isStaleRun(run, afterTwentyHours, { ...cloud, deadline_at: null }), true);
 });
 
 test("same-day scheduled repeats reuse a finished report without dispatch", async () => {
@@ -400,6 +413,7 @@ test("stale scheduled runs are closed before the same row is retried", async () 
   const retried = runRecord({ status: "queued", stage: "clustering" });
   const admin = createScriptedAdmin([
     { data: [staleRun], error: null },
+    { data: [], error: null },
     { data: null, error: null },
     { data: null, error: null },
     { data: null, error: { code: "23505" } },

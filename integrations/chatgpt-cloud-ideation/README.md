@@ -1,10 +1,16 @@
-# ChatGPT cloud ideation comparison
+# ChatGPT cloud ideation
 
-The production API workflow remains authoritative. After shared Luna filtering
-and linked-context hydration, a separate Vercel Workflow coordinates cloud
-shortlisting, one-post generation, trusted candidate selection, and cloud web
-research. It validates and stores comparison results without publishing them or
-overwriting the API's decisions.
+New production runs use ChatGPT cloud for Sol shortlisting, one-post generation
+and web research. After shared Luna filtering and linked-context hydration, the
+daily Vercel Workflow hands off to the cloud coordinator. Trusted server code
+selects candidates, validates research, and publishes qualifying ideas into the
+normal reports. Luna and embeddings remain API-backed.
+
+`PIPELINE.ideationProvider = "chatgpt_cloud"` is snapshotted onto each new run.
+The Sol Responses API implementation remains available for explicit rollback by
+setting this value to `"api"` and deploying. Cloud failure never triggers Sol API
+calls automatically. Existing runs keep their saved provider, and historical
+`mode: "shadow"` comparisons remain unpublished.
 
 The isolated worker child uses the installed Supabase plugin. This integration does
 not depend on the optional private Signal Foundry MCP connector, which was not
@@ -23,6 +29,11 @@ then returns only its sanitized job ID and status. The parent waits for completi
 or attention, never reads payloads or uses SQL, and never reuses or follows up
 with a child. If isolated spawning is unavailable or denied, the task stops;
 there is no direct-SQL or inherited-context fallback.
+For the primary cutover, apply the primary publication migration and validate
+the application deployment, then save this exact updated prompt in the existing
+hourly schedule before its first primary claim. Its parent and isolated child
+both carry the owner's primary/shadow authorization; the three queue RPCs and
+the prohibition on direct publication remain unchanged.
 
 Select GPT-5.6 Sol High, connect Supabase, and run once per hour. The schedule
 must run in cloud Work, with no local project or files required. This explicit
@@ -35,9 +46,13 @@ the five-minute schedule was not created. See the
 [official task frequency limits](https://help.openai.com/en/articles/10291617-tasks-in-chatgpt).
 The coordinator waits durably with one-minute sleeps, up to 1,440 checks and a
 24-hour deadline for new comparisons; previously saved deadlines remain unchanged.
+Primary publication retains an immutable research-job payload/result copy for
+the existing publication boundary. Purging cloud inputs/payloads after 48 hours
+does not remove that copy; its existing research-job retention policy applies.
 A full batch can require ten hourly executions: a shortlist,
 eight separate candidate jobs and research, before retries or queue delays.
-The hourly worker is active, and its first automatic execution submitted a real
+The pre-cutover shadow verification established that the hourly worker is
+active, and its first automatic execution submitted a real
 shortlist that the server validated: 26 assessments advanced eight posts. That
 historical job retains its immutable original Medium request. All eight
 candidate jobs have since completed server validation, including the last
@@ -56,7 +71,7 @@ hourly executions. The result remains `published: false`, the original API run
 was unchanged, and the owner's two published ideas were unchanged.
 At this checkpoint, 324 automated tests and the production build passed.
 The deployment and operational evidence are recorded in
-[CURRENT_ARCHITECTURE.md](../../CURRENT_ARCHITECTURE.md#30-chatgpt-cloud-ideation-comparison).
+[CURRENT_ARCHITECTURE.md](../../CURRENT_ARCHITECTURE.md#30-cloud-primary-research-and-historical-comparisons).
 
 The cloud payload reuses the application's versioned prompts and schemas.
 Current enqueue code requests Sol High for every new cloud job, including
@@ -66,7 +81,16 @@ distinct; the application does not infer a verified model identity from them.
 Research source access remains worker-reported rather than independently attested.
 Luna filtering/context and embedding calls remain API-backed.
 
-Existing eligible runs can start an additive comparison from the Source feed.
-New runs enqueue it automatically. Review the API and cloud decisions together
-there. A successful comparison does not switch the production provider: API
-cutover is a separate change after the cloud results have been reviewed.
+The Source feed shows cloud decisions and published idea links for primary runs.
+Historical API runs retain their API panels and separate cloud comparisons;
+eligible older API runs can still start a comparison there. Primary runs do not
+offer that separate comparison action. The historical test above validates the
+worker and shadow path; production primary publication requires its own deployment
+and live verification record.
+The primary-cutover code passed all 339 automated tests and the production build.
+Migration `20260905014539` is applied. Its live database contract test passed
+claim/submission, nonempty publication and evidence links, idempotent replay,
+shadow rejection, empty/failure completion and usage preservation. All fixtures
+were rolled back, leaving the production idea count at two. The source cutover
+deployment, saved schedule-prompt update and first live primary publication
+are still pending verification.

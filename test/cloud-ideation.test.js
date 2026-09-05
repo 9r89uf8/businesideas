@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { candidateGenerationSchema } from "../src/lib/ai-schemas/candidate-generation.js";
 import { IDEA_HARD_FILTER_CHECKS } from "../src/lib/config.js";
 import { createCloudIdeationService } from "../src/lib/cloud-ideation/engine.js";
+import { hashResearchJson } from "../src/lib/research/canonical-json.js";
 import {
   cloudCandidateForDedup, cloudCandidatePayload, validateCloudCandidate,
   validateCloudResearch, validateCloudSchema, validateCloudShortlist,
@@ -65,12 +66,49 @@ function researchResult(payload) {
 
 function database(postIds = ["101", "102"]) {
   const tables = {
-    runs: [{ id: RUN, owner_id: OWNER, settings_snapshot: { preferences: { avoid: ["hardware"] } }, window_end: NOW, started_at: NOW, created_at: NOW }],
+    runs: [{ id: RUN, owner_id: OWNER, status: "running", stage: "generating", counts: { fetched: 30 }, usage: { filter: { input_tokens: 17 }, embeddings: { input_tokens: 5 } }, settings_snapshot: { preferences: { avoid: ["hardware"] } }, window_end: NOW, started_at: NOW, created_at: NOW }],
     posts: postIds.map((id) => ({ x_post_id: id, owner_id: OWNER, author_id: `author-${id}`, author_username: `user${id}`, text: `UNIQUE_POST_${id}: a useful commercial workflow`, url: `https://x.com/user${id}/status/${id}`, x_created_at: NOW, availability: "available" })),
     run_posts: postIds.map((id) => ({ run_id: RUN, owner_id: OWNER, post_id: id, selected_for_ai: true, filter_decision: "keep", commercial_element: "problem", filter_reason: "A recurring manual expense", hydrated_context: null, metrics: {} })),
-    cloud_ideation_runs: [], cloud_model_jobs: [], ideas: [],
+    cloud_ideation_runs: [], cloud_model_jobs: [], ideas: [], research_jobs: [],
   };
   const writes = [];
+  const rpcCalls = [];
+  const failures = { publication: false };
+  async function rpc(name, args) {
+    rpcCalls.push({ name, args: clone(args) });
+    const run = tables.cloud_ideation_runs.find((row) => row.id === args.p_run_id && row.owner_id === args.p_owner_id);
+    const source = tables.runs.find((row) => row.id === args.p_run_id && row.owner_id === args.p_owner_id);
+    assert.equal(run.mode, "primary", "Shadow runs must never reach publication RPCs");
+    assert.equal(source.settings_snapshot.ideation_provider, "chatgpt_cloud");
+    if (["completed", "no_ideas", "failed"].includes(run.status)) return { data: [clone(run)], error: null };
+    let report = clone(args.p_report);
+    let status;
+    if (name === "publish_primary_cloud_ideas") {
+      if (failures.publication) return { data: null, error: { message: "Injected transaction rollback" } };
+      const job = tables.cloud_model_jobs.find((row) => row.id === args.p_cloud_job_id);
+      assert.equal(job.status, "completed");
+      assert.equal(run.phase, "validating");
+      assert.equal(args.p_payload_hash, hashResearchJson(job.payload.input));
+      assert.equal(args.p_result_hash, hashResearchJson(job.result));
+      assert.equal(args.p_x_sources.length, args.p_ideas.length);
+      const ids = args.p_ideas.map((idea) => {
+        const id = randomUUID(); tables.ideas.push({ id, owner_id: OWNER, run_id: RUN, ...clone(idea) }); return id;
+      });
+      tables.research_jobs.push({ id: job.id, status: "completed", run_id: RUN, owner_id: OWNER, payload: clone(job.payload.input), result: clone(job.result) });
+      status = ids.length ? "completed" : "no_ideas";
+      report = { ...report, idea_ids: ids, published: Boolean(ids.length), mode: "primary" };
+    } else {
+      assert.equal(name, "finish_primary_cloud_ideation");
+      status = args.p_error_message ? "failed" : "no_ideas";
+      if (!args.p_error_message) assert.deepEqual(report.ideas, []);
+    }
+    const usage = report.usage || {};
+    source.usage = { ...source.usage, ...usage, embeddings: { input_tokens: source.usage.embeddings.input_tokens + (usage.embeddings?.input_tokens || 0) } };
+    source.counts = { ...source.counts, ...report.counts, ideas_saved: report.idea_ids?.length || 0 };
+    Object.assign(source, { status, stage: null, completed_at: NOW });
+    Object.assign(run, { status, phase: "done", completed_at: NOW, result: report, error_message: args.p_error_message || null });
+    return { data: [clone(run)], error: null };
+  }
   function from(table) {
     assert.ok(Object.hasOwn(tables, table), `Unexpected table ${table}`);
     let operation = "select";
@@ -126,18 +164,18 @@ function database(postIds = ["101", "102"]) {
   }
   let embeddingCalls = 0;
   const service = createCloudIdeationService({
-    db: { from }, now: () => new Date(NOW),
+    db: { from, rpc }, now: () => new Date(NOW),
     embedTexts: async (texts) => { embeddingCalls += texts.length ? 1 : 0; return { embeddings: texts.map(() => [1, 0, 0]), usage: { input_tokens: texts.length * 10 } }; },
   });
-  return { tables, writes, service, db: { from }, embeddingCalls: () => embeddingCalls };
+  return { tables, writes, rpcCalls, failures, service, db: { from, rpc }, embeddingCalls: () => embeddingCalls };
 }
 
 function submit(job, result) {
   Object.assign(job, { status: "submitted", result: clone(result), claim_id: randomUUID(), submitted_at: NOW, runtime_metadata: { reported_model: "gpt-5.6-sol", model_verified: false } });
 }
 
-async function seedGeneration(store, ids) {
-  await store.service.createCloudIdeationRun({ runId: RUN, ownerId: OWNER, survivorPostIds: ids });
+async function seedGeneration(store, ids, mode = "shadow") {
+  await store.service.createCloudIdeationRun({ runId: RUN, ownerId: OWNER, survivorPostIds: ids, mode });
   await store.service.advanceCloudIdeationRun({ runId: RUN, ownerId: OWNER });
   return store.tables.cloud_model_jobs.filter((job) => job.kind === "candidate");
 }
@@ -217,6 +255,7 @@ test("partial generation failure continues through research and only saves shado
   assert.equal(completed.result.verification.runtime_model, "unverified");
   assert.ok(completed.result.rejected.some((item) => item.reason_codes.includes("generation_failed")));
   assert.equal(store.tables.ideas.length, 0);
+  assert.deepEqual(store.rpcCalls, []);
   const calls = store.embeddingCalls();
   await store.service.advanceCloudIdeationRun({ runId: RUN, ownerId: OWNER });
   assert.equal(store.embeddingCalls(), calls);
@@ -376,8 +415,142 @@ test("research rejects invented identities and unsafe source URLs", async () => 
   assert.throws(() => validateCloudResearch(unsafe, payload), /invalid external source/);
 });
 
-test("service code has no route to production publication or API generation", async () => {
+test("service code has no Sol API calls or direct production table mutations", async () => {
   const source = await readFile(new URL("../src/lib/cloud-ideation/engine.js", import.meta.url), "utf8");
   assert.doesNotMatch(source, /publish_run_|finalizeResearchResult|submitResearchResultAndDispatch|callStructured|\.responses\./);
   assert.doesNotMatch(source, /from\("(?:runs|run_posts|posts|ideas|research_jobs|clusters)"\)[\s\S]{0,30}\.(?:update|upsert|insert|delete)\(/);
+});
+
+test("primary mode requires explicit authorization and cannot promote a saved shadow", async () => {
+  const store = database(["101"]);
+  const args = { runId: RUN, ownerId: OWNER, survivorPostIds: ["101"], mode: "primary" };
+  await assert.rejects(store.service.createCloudIdeationRun(args), /active cloud-provider/);
+  store.tables.runs[0].settings_snapshot.ideation_provider = "chatgpt_cloud";
+  store.tables.runs[0].status = "completed";
+  await assert.rejects(store.service.createCloudIdeationRun(args), /active cloud-provider/);
+  store.tables.runs[0].status = "running";
+  const shadow = await store.service.createCloudIdeationRun({ ...args, mode: undefined });
+  assert.equal(shadow.mode, "shadow");
+  await assert.rejects(store.service.createCloudIdeationRun(args), /cannot be changed/);
+  assert.deepEqual(store.rpcCalls, []);
+});
+
+test("primary research publishes with real IDs, citations, provenance, and idempotent usage", async () => {
+  const store = database(["101"]);
+  store.tables.runs[0].settings_snapshot.ideation_provider = "chatgpt_cloud";
+  const [job] = await seedGeneration(store, ["101"], "primary");
+  submit(job, candidate("101"));
+  await store.service.advanceCloudIdeationRun({ runId: RUN, ownerId: OWNER });
+  const research = store.tables.cloud_model_jobs.find((item) => item.kind === "research");
+  const result = researchResult(research.payload.input);
+  submit(research, result);
+  const finished = await store.service.advanceCloudIdeationRun({ runId: RUN, ownerId: OWNER });
+  assert.equal(finished.status, "completed");
+  assert.equal(finished.result.published, true);
+  assert.equal(finished.result.mode, "primary");
+  assert.deepEqual(finished.result.idea_ids, store.tables.ideas.map((idea) => idea.id));
+  assert.equal(store.tables.research_jobs[0].id, research.id);
+  assert.equal(store.tables.research_jobs[0].status, "completed");
+  assert.equal(store.tables.runs[0].status, "completed");
+  assert.equal(store.tables.runs[0].usage.filter.input_tokens, 17);
+  assert.equal(store.tables.runs[0].usage.embeddings.input_tokens, 25);
+  assert.equal(store.tables.runs[0].usage.chatgpt_cloud.model_verified, false);
+  assert.equal(store.tables.runs[0].usage.chatgpt_cloud.token_usage, "unavailable");
+  assert.equal(store.tables.runs[0].usage.chatgpt_cloud.jobs.length, 2);
+  const published = store.rpcCalls.find((call) => call.name === "publish_primary_cloud_ideas").args;
+  assert.equal(published.p_ideas.length, 1);
+  assert.equal(published.p_ideas[0].candidate_id, undefined);
+  assert.deepEqual(published.p_ideas[0].embedding, [1, 0, 0]);
+  assert.equal(published.p_x_sources[0].post_id, "101");
+  assert.equal(published.p_x_sources[0].evidence_summary, job.result.selected_idea.problem_or_opportunity);
+  assert.equal(published.p_research_sources.length, 1);
+  assert.deepEqual(published.p_idea_research_sources[0].supported_claims, ["Claim evidence can be uploaded online."]);
+  const before = clone(store.tables.runs[0]);
+  await store.service.advanceCloudIdeationRun({ runId: RUN, ownerId: OWNER });
+  await store.service.failCloudIdeationRun({ runId: RUN, ownerId: OWNER });
+  assert.deepEqual(store.tables.runs[0], before);
+  assert.equal(store.rpcCalls.length, 1);
+});
+
+test("primary rejected research still saves provenance without publishing weak ideas", async () => {
+  const store = database(["101"]);
+  store.tables.runs[0].settings_snapshot.ideation_provider = "chatgpt_cloud";
+  const [job] = await seedGeneration(store, ["101"], "primary");
+  submit(job, candidate("101"));
+  await store.service.advanceCloudIdeationRun({ runId: RUN, ownerId: OWNER });
+  const research = store.tables.cloud_model_jobs.find((item) => item.kind === "research");
+  const result = researchResult(research.payload.input); result.ideas[0].evidence_score = 64;
+  submit(research, result);
+  const finished = await store.service.advanceCloudIdeationRun({ runId: RUN, ownerId: OWNER });
+  assert.equal(finished.status, "no_ideas");
+  assert.equal(finished.result.published, false);
+  assert.equal(store.tables.runs[0].status, "no_ideas");
+  assert.equal(store.tables.ideas.length, 0);
+  assert.equal(store.tables.research_jobs.length, 1);
+  assert.deepEqual(store.rpcCalls[0].args.p_ideas, []);
+  assert.ok(finished.result.rejected.some((item) => item.reason_codes.includes("weak_idea_evidence")));
+});
+
+test("primary final dedup catches an idea published while cloud research was pending", async () => {
+  const store = database(["101"]);
+  store.tables.runs[0].settings_snapshot.ideation_provider = "chatgpt_cloud";
+  const [job] = await seedGeneration(store, ["101"], "primary");
+  submit(job, candidate("101"));
+  await store.service.advanceCloudIdeationRun({ runId: RUN, ownerId: OWNER });
+  const research = store.tables.cloud_model_jobs.find((item) => item.kind === "research");
+  const result = researchResult(research.payload.input);
+  store.tables.ideas.push({
+    id: randomUUID(), owner_id: OWNER, run_id: OTHER, created_at: "2026-09-04T21:00:00.000Z",
+    target_customer: result.ideas[0].target_customer, problem: result.ideas[0].problem,
+    fingerprint_hash: "semantic-only", embedding: [1, 0, 0],
+  });
+  submit(research, result);
+  const finished = await store.service.advanceCloudIdeationRun({ runId: RUN, ownerId: OWNER });
+  assert.equal(finished.status, "no_ideas");
+  assert.ok(finished.result.rejected.some((item) => item.stage === "final_deduplication" && item.reason_codes.includes("historical_semantic_duplicate")));
+  assert.equal(store.tables.ideas.length, 1);
+});
+
+test("primary early no-ideas and deadlines synchronize their source runs", async () => {
+  for (const reason of ["no_posts", "no_candidate", "deadline"]) {
+    const store = database(["101"]);
+    store.tables.runs[0].settings_snapshot.ideation_provider = "chatgpt_cloud";
+    await store.service.createCloudIdeationRun({ runId: RUN, ownerId: OWNER, survivorPostIds: reason === "no_posts" ? [] : ["101"], mode: "primary" });
+    assert.equal(store.tables.cloud_ideation_runs[0].status, "pending");
+    if (reason !== "no_posts") {
+      await store.service.advanceCloudIdeationRun({ runId: RUN, ownerId: OWNER });
+      const job = store.tables.cloud_model_jobs[0];
+      submit(job, candidate("101", "no_viable_idea"));
+      if (reason === "deadline") store.tables.cloud_ideation_runs[0].deadline_at = "2026-09-04T19:00:00.000Z";
+    }
+    const finished = await store.service.advanceCloudIdeationRun({ runId: RUN, ownerId: OWNER });
+    const expected = reason === "deadline" ? "failed" : "no_ideas";
+    assert.equal(finished.status, expected);
+    assert.equal(store.tables.runs[0].status, expected);
+    assert.equal(store.tables.research_jobs.length, 0);
+    assert.equal(store.tables.ideas.length, 0);
+    assert.equal(store.rpcCalls[0].name, "finish_primary_cloud_ideation");
+    assert.equal(finished.result.published, false);
+  }
+});
+
+test("a rolled-back primary publication stays retryable and never claims success", async () => {
+  const store = database(["101"]);
+  store.tables.runs[0].settings_snapshot.ideation_provider = "chatgpt_cloud";
+  const [job] = await seedGeneration(store, ["101"], "primary");
+  submit(job, candidate("101"));
+  await store.service.advanceCloudIdeationRun({ runId: RUN, ownerId: OWNER });
+  const research = store.tables.cloud_model_jobs.find((item) => item.kind === "research");
+  submit(research, researchResult(research.payload.input));
+  store.failures.publication = true;
+  await assert.rejects(store.service.advanceCloudIdeationRun({ runId: RUN, ownerId: OWNER }), /publish its primary/);
+  assert.equal(store.tables.cloud_ideation_runs[0].phase, "validating");
+  assert.equal(store.tables.cloud_ideation_runs[0].result.published, false);
+  assert.equal(store.tables.runs[0].status, "running");
+  assert.equal(store.tables.research_jobs.length, 0);
+  assert.equal(store.tables.ideas.length, 0);
+  store.failures.publication = false;
+  await store.service.advanceCloudIdeationRun({ runId: RUN, ownerId: OWNER });
+  assert.equal(store.tables.ideas.length, 1);
+  assert.equal(store.tables.runs[0].usage.embeddings.input_tokens, 25);
 });

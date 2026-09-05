@@ -77,6 +77,7 @@ export function buildEffectiveSettings(settings) {
   const preferences = settings?.preferences;
 
   return {
+    ideation_provider: PIPELINE.ideationProvider,
     ranking_version: POST_QUALITY.version,
     minimum_views: POST_QUALITY.minimumViews,
     research_window_hours: PIPELINE.researchWindowHours,
@@ -137,9 +138,14 @@ export function createRunKey(trigger, now = new Date()) {
   throw new TypeError("trigger must be scheduled or manual.");
 }
 
-export function isStaleRun(run, nowMs = Date.now()) {
+export function isStaleRun(run, nowMs = Date.now(), cloudRun = null) {
   if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) {
     return false;
+  }
+
+  if (cloudRun?.mode === "primary" && ["pending", "running"].includes(cloudRun.status)) {
+    const deadline = Date.parse(cloudRun.deadline_at);
+    return !Number.isFinite(deadline) || nowMs >= deadline;
   }
 
   const referenceValue =
@@ -166,8 +172,18 @@ async function expireStaleRuns(admin, ownerId, now) {
     throw new Error("Active research runs could not be checked.");
   }
 
+  let cloudRuns = [];
+  if (data?.length) {
+    const cloud = await admin.from("cloud_ideation_runs")
+      .select("id, mode, status, deadline_at")
+      .eq("owner_id", ownerId).eq("mode", "primary")
+      .in("id", data.map((run) => run.id));
+    if (cloud.error) throw new Error("Active cloud research could not be checked.");
+    cloudRuns = cloud.data || [];
+  }
+  const cloudByRun = new Map(cloudRuns.map((run) => [run.id, run]));
   const staleRuns = (data ?? []).filter((run) =>
-    isStaleRun(run, now.getTime()),
+    isStaleRun(run, now.getTime(), cloudByRun.get(run.id)),
   );
   const staleIds = staleRuns.map((run) => run.id);
 
@@ -175,8 +191,17 @@ async function expireStaleRuns(admin, ownerId, now) {
     return;
   }
 
+  for (const run of staleRuns.filter((item) => cloudByRun.has(item.id))) {
+    const { error: cloudFailure } = await admin.rpc("finish_primary_cloud_ideation", {
+      p_owner_id: ownerId, p_run_id: run.id,
+      p_report: null,
+      p_error_message: "Cloud research exceeded its 24-hour deadline.",
+    });
+    if (cloudFailure) throw new Error("Stale cloud research could not be closed.");
+  }
+
   const researchRunIds = staleRuns
-    .filter((run) => EXTERNAL_RESEARCH_STAGES.has(run.stage))
+    .filter((run) => !cloudByRun.has(run.id) && EXTERNAL_RESEARCH_STAGES.has(run.stage))
     .map((run) => run.id);
 
   if (researchRunIds.length) {

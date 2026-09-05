@@ -11,16 +11,19 @@ hydrates only ambiguous linked context, shortlists at most eight posts, creates
 one independently generated candidate per shortlisted post, and researches at
 most three deduplicated candidates before publishing zero to three ideas.
 
-In the authoritative API path, Luna, Sol, and embeddings are OpenAI Platform
-calls made with server-only credentials. Luna performs the cheap commercial filter and bounded context
-hydration. Sol performs shortlisting, isolated candidate generation, and final
-web research with strict structured output.
+New production runs use ChatGPT cloud for Sol shortlisting, isolated candidate
+generation and final web research. Luna filtering/context and embeddings remain
+OpenAI Platform calls made with server-only credentials. After the shared Luna
+stages, the daily Vercel Workflow dispatches a primary cloud run and returns;
+the cloud coordinator validates results and publishes through trusted database
+functions. The hourly Work parent delegates exactly one job to a new Sol High
+child with no forked conversation history.
 
-There is one publication path: the daily Vercel Workflow continues through API
-research and publication. An additive ChatGPT cloud comparison branches after
-the shared Luna stages, with its own shortlist, candidate jobs, research and
-stored results. It cannot publish or replace API checkpoints. Its recurring
-cloud Work schedule still requires live verification (sections 22 and 30).
+`PIPELINE.ideationProvider = "chatgpt_cloud"` is saved as
+`runs.settings_snapshot.ideation_provider` when a run is created. The retained
+Sol Responses API implementation can be selected explicitly with `"api"` for
+rollback; cloud errors do not fall back to API calls. Historical shadow
+comparisons keep their immutable mode and cannot publish (sections 22 and 30).
 The repository also retains the separate narrow Signal Foundry MCP interface
 and Codex skill as an optional manual or future research worker path.
 
@@ -55,10 +58,10 @@ configurable fallback path.
  context and low-context hosted web search
           |
           v
- Sol shortlist when more than 8 survive; maximum 8 posts
+ Cloud shortlist when more than 8 survive; maximum 8 posts
           |
           v
- Independent Sol call per post: 3 concepts -> 0 or 1 candidate
+ New cloud Sol High child per post: 3 concepts -> 0 or 1 candidate
           |
           v
  Persist generation result -> exact/semantic dedup -> top 3
@@ -67,24 +70,24 @@ configurable fallback path.
  Build bounded, immutable candidate research payload
                     |
                     v
-       Supabase research_jobs: pending
+       Supabase cloud_model_jobs: pending research
                     |
                     v
- Same daily Workflow claims its prepared job
+ Hourly cloud parent spawns one child with fork_turns: none
                     |
                     v
-  OpenAI Responses API: gpt-5.6-sol/high
- background response + bounded hosted web search
+  Child claims one job, researches on the public web,
+  and submits its bounded structured response
                     |
                     v
- Workflow sleeps and polls for at most 30 minutes
+ Cloud coordinator checks durably for up to 24 hours
                     |
                     v
       Durable result saved in Supabase
                     |
                     v
- Finalizer runs as a later Workflow step
- validate -> embed -> deduplicate -> publish
+ Trusted coordinator validates -> embeds -> deduplicates
+ Database transaction publishes ideas and completes both runs
                     |
                     v
   0 ideas: no_ideas     1-3 ideas: completed
@@ -94,13 +97,13 @@ The split is deliberate:
 
 - Supabase owns durable state.
 - Vercel owns trusted collection, validation, deduplication, and publication.
-- OpenAI hosted web search and Sol produce the bounded research result.
+- A scheduled ChatGPT cloud worker produces the bounded research result.
 - Model output never writes directly to `ideas`.
 - The browser never receives service credentials or provider tokens.
 
-An authorized MCP client can optionally claim and complete the same durable
-jobs. That path uses the same payload, result schema, queue RPCs, and finalizer,
-but it is not invoked by the daily production flow.
+An authorized MCP client can optionally claim legacy `research_jobs`. That
+retained boundary shares result schemas and publication validation, but is not
+the cloud worker's queue or the default daily production flow.
 
 ## 2. Technology stack
 
@@ -125,21 +128,25 @@ but it is not invoked by the daily production flow.
 | Recent social evidence | Official X API v2 |
 | Commercial post filtering | `gpt-5.6-luna`, low reasoning |
 | Ambiguous linked-context hydration | `gpt-5.6-luna`, low reasoning, hosted web search |
-| Post shortlisting | `gpt-5.6-sol`, medium reasoning |
-| Isolated candidate generation | `gpt-5.6-sol`, high reasoning |
+| Post shortlisting | ChatGPT cloud, requested `gpt-5.6-sol` High |
+| Isolated candidate generation | New cloud child per post, requested `gpt-5.6-sol` High |
 | Fingerprint embeddings | `text-embedding-3-small` |
-| Candidate research and refinement | `gpt-5.6-sol`, high reasoning, Responses API |
-| External research | OpenAI hosted `web_search` tool |
+| Candidate research and refinement | New cloud child, requested `gpt-5.6-sol` High |
+| External research | Cloud worker public-web research; source access worker-reported |
 
 ### Production research integration
 
 | Area | Implemented technology |
 | --- | --- |
-| API | OpenAI Responses API through the OpenAI JavaScript SDK |
-| Execution | Background response with stored state |
-| Search | One hosted `web_search` tool, medium context |
-| Output | Strict JSON Schema structured output |
-| Waiting and retry | Durable Vercel Workflow sleeps and steps |
+| Model work | Hourly ChatGPT Work parent and one isolated child per execution |
+| Execution | Immutable owner-scoped jobs, 30-minute claims, at most three attempts |
+| Search | Public-web research in the child |
+| Output | Saved structured JSON, independently validated against the schema |
+| Waiting and retry | Durable Vercel coordinator, one-minute sleeps, 24-hour run deadline |
+
+Runtime model identity is unverified despite explicit Sol High requests. The
+Responses API implementation is retained for rollback, not called for Sol work
+by new cloud-provider runs.
 
 ### Optional MCP integration
 
@@ -170,7 +177,7 @@ but it is not invoked by the daily production flow.
 
 ### Important absences
 
-The API publication path does not use:
+The retained API rollback path does not use:
 
 - TypeScript;
 - an ORM;
@@ -219,12 +226,12 @@ They are responsible for:
 - optionally starting and stopping the For You EC2 worker, invoking it through
   SSM, accepting its one-use webhook result, and hydrating its post IDs through
   the official X lookup API;
-- calling Luna and Sol, hosted web search, and embeddings;
+- calling Luna, its bounded context search, and embeddings;
+- dispatching primary cloud jobs and advancing their validated state;
 - constructing and hashing the research payload;
-- claiming the prepared research job through narrow database functions;
-- starting, polling, and cancelling bounded OpenAI background responses;
+- retaining Sol response creation/polling/cancellation for explicit API rollback;
 - validating and persisting the research result;
-- running final validation as a later step in the same daily workflow;
+- running final validation in the cloud coordinator;
 - validating and atomically publishing ideas.
 
 The application also exposes the authenticated MCP endpoint for the optional
@@ -297,7 +304,7 @@ Failure JSON records only an allowlisted page-title label and a bounded,
 text-free structural HTML fragment. No title, DOM, or screenshot read occurs
 after the page is observed outside the exact approved Home route.
 
-### OpenAI research boundary
+### Retained OpenAI API research boundary
 
 OpenAI is external to the Vercel process and database. Vercel keeps the API key
 and passes only the bounded immutable job envelope to the Responses API.
@@ -341,8 +348,9 @@ Supabase Postgres is the source of truth for:
 - published ideas and their evidence;
 - owner feedback.
 
-Separate cloud comparison tables retain their own immutable model inputs,
-submitted responses, validation state and comparison reports (section 30).
+Cloud tables retain immutable model inputs, submitted responses, validation
+state and final reports. Primary reports link actual published ideas; historical
+shadow reports remain comparison-only (section 30).
 
 Machine-checkable state changes are implemented as narrow Postgres functions.
 Mutating research functions are executable only by the service role. The owner
@@ -386,11 +394,16 @@ running run for the owner at a time.
 `POST /api/runs/[id]/cloud-comparison` requires the signed-in owner and verifies
 the source run belongs to that owner. It starts or recovers only that run's
 cloud comparison from retained, selected posts that Luna kept or resolved.
-It returns `202` with comparison state, or `409` when no posts survived. It does
+It returns `202` with comparison state, or `409` when no posts survived or the
+run's saved provider is `chatgpt_cloud`. The primary guard runs before post
+loading or dispatch, preventing a shadow row from occupying a primary run ID. It does
 not restart X collection, Luna or the API run. The Source feed exposes this
 action when eligible retained posts exist and no comparison has been recorded.
 
 ### API research continuation
+
+This continuation is retained for runs whose saved provider is `api`. The
+default cloud provider hands off after Luna and never enters this Sol API path.
 
 There is no second cron and no hourly queue poll. After the daily or manual run
 persists its research job, that same Vercel Workflow:
@@ -606,22 +619,33 @@ element. Unavailable context removes that post without blocking kept siblings.
 
 ## 9. Sol shortlist and isolated candidate generation
 
+The primary cloud coordinator applies the selection below using one shortlist
+job and one independently claimed candidate job per selected post. Responses
+are retained in `cloud_model_jobs`, with assessments in
+`cloud_ideation_runs.shortlist_result`. The remaining paragraph describes the
+retained API rollback implementation of the same model task.
+
 If eight or fewer posts survive, all advance directly. If more than eight
 survive, one Sol request assesses every survivor and selects at most eight.
 Assessments and the chosen post-first units are stored before generation.
 
-Each shortlisted post then receives its own Sol Responses request with only
+In the API rollback path, each shortlisted post receives its own Sol Responses request with only
 that post, its resolved context summary, and the run's product preferences.
 The model considers exactly three concepts and returns either one selected
 candidate or `no_viable_idea`. Calls run independently; each result and its
 usage are checkpointed before the workflow continues, so one failed call does
 not contaminate or erase successful siblings.
 
-The existing `clusters` table is used as the persistence envelope for these
+The API rollback path uses `clusters` as the persistence envelope for these
 single-post shortlist units. Its legacy Terra columns remain for compatibility;
 Terra clustering is not called by the production daily workflow.
 
 ## 10. Candidate deduplication and research-job preparation
+
+Primary cloud research uses the coordinator's saved candidate results and the
+same exact/semantic duplicate rules to select at most three ideas. It creates
+one immutable `cloud_model_jobs` research payload. The function and durable
+handoff described below are retained for API rollback.
 
 `prepareCandidateResearchJob()` reloads all generation checkpoints, orders
 valid candidates by their generation score, and fingerprints each candidate's
@@ -678,9 +702,9 @@ The daily workflow keeps the job ID, reloads the durable row, and continues
 through claim, API research, result persistence, and finalization. Durable
 Workflow sleeps suspend execution while waiting; there is no polling cron.
 
-## 11. OpenAI API research worker
+## 11. Retained OpenAI API research worker
 
-The production research stage is implemented by:
+The explicit API rollback research stage is implemented by:
 
 ```text
 src/workflows/openai-research-steps.js
@@ -883,7 +907,7 @@ submission against the active claim.
 
 The result is durable before the MCP route dispatches the separate finalizer
 workflow. This separate dispatch is specific to the optional MCP path; the
-production API path invokes finalization inside its existing daily Workflow.
+retained API rollback path invokes finalization inside its daily Workflow.
 
 Submitting the identical accepted result again is idempotent and can restart an
 idempotent finalizer if dispatch failed. A different result cannot replace an
@@ -1086,10 +1110,24 @@ still continue. A structurally invalid root result is rejected as a whole.
 
 ## 15. Final validation and publication
 
-Both research paths use the same `finalizeResearchResult` implementation after
+The primary cloud coordinator validates its saved research response, candidate
+membership, evidence/product rules and duplicates. It prepares publication rows
+and calls `publish_primary_cloud_ideas`. This service-only transaction bridges
+the validated cloud research into the existing publication boundary, saves the
+normal idea/evidence tables, completes the cloud and source runs, and records
+actual `idea_ids` with `published: true` only when ideas were saved.
+`finish_primary_cloud_ideation` atomically closes empty or failed primary runs.
+The worker itself can only claim, submit or report failure; it cannot publish.
+The publication bridge inserts the accepted cloud research into `research_jobs`
+directly as `validating` within its transaction and calls the existing
+`publish_run_researched_ideas` function. It never exposes that row as a pending
+API-claimable job or makes a Sol API request. A database trigger synchronizes
+primary cloud progress into the source run; terminal functions close both.
+
+The retained API and optional MCP paths use `finalizeResearchResult` after
 the result has been stored through `submit_research_result`:
 
-- the production API path persists the result and calls the finalizer as a
+- the API rollback path persists the result and calls the finalizer as a
   later step in the same daily Workflow;
 - the optional MCP path persists the result and then starts `finalizeResearch`
   as a separate Vercel Workflow.
@@ -1097,7 +1135,7 @@ the result has been stored through `submit_research_result`:
 Durable acceptance always precedes finalization. Replaying the identical result
 is idempotent; a different result cannot replace an accepted result.
 
-The finalizer:
+That retained finalizer:
 
 1. Atomically moves the job from `submitted` to `validating`.
 2. Reloads the parent run, immutable payload, and submitted result.
@@ -1232,10 +1270,13 @@ Payloads and results are each limited to one MiB. Attempts are limited to three.
 
 ### `cloud_ideation_runs` and `cloud_model_jobs`
 
-`cloud_ideation_runs.id` is the source API run ID, linked through an owner-aware
-foreign key. Each row has fixed `mode = 'shadow'`, immutable input and deadline,
+`cloud_ideation_runs.id` is the source run ID, linked through an owner-aware
+foreign key. Each row has immutable `mode` (`primary` or `shadow`), input and deadline,
 its own status/phase, shortlist result, trusted selection/report checkpoint,
 coordinator Workflow ID and lifecycle timestamps.
+Primary completion records `published` and actual `idea_ids`; shadow results
+cannot publish. New source runs snapshot `ideation_provider = 'chatgpt_cloud'`;
+existing runs retain their provider and modes.
 
 `cloud_model_jobs` holds independently claimed `shortlist`, `candidate` and
 `research` work, with a unique `(cloud_run_id, job_key)`. It retains the source
@@ -1298,6 +1339,11 @@ An exhausted or unrecoverable failure ends at:
 
 ### Research-job state
 
+The state machine below describes the retained API/MCP queue. Primary cloud
+model jobs use `pending -> claimed -> submitted -> completed`, or `failed`;
+validation is trusted coordinator work. Only accepted primary research enters
+the existing publication boundary through the atomic bridge.
+
 ```text
 pending
   -> claimed
@@ -1317,14 +1363,24 @@ submitted or validating
 
 ### Leases
 
-Claims last at most two hours. An expired claim can be reclaimed with a new
+Primary cloud claims last at most 30 minutes, within the immutable 24-hour run
+deadline, with at most three claims and no renewal. The remaining lease rules
+describe the retained API/MCP queue.
+
+API/MCP claims last at most two hours. An expired claim can be reclaimed with a new
 claim ID while fewer than three attempts have been used.
 
-No lease-renewal operation is exposed. The production response deadline is 30
+No lease-renewal operation is exposed. The API response deadline is 30
 minutes, leaving room inside the two-hour lease for result persistence and
 state recovery. An optional MCP client must also finish within the lease.
 
 ### Workflow retries
+
+Cloud-primary runs persist each model response and coordinator checkpoint.
+The daily Workflow dispatches once recoverably after Luna and returns; the
+cloud coordinator advances primary run progress and waits durably for jobs.
+Its failure path closes both cloud and source runs instead of invoking Sol API
+fallback. The following response-specific retries apply to API rollback.
 
 Fetch, Luna filtering/context, Sol shortlisting/generation, research-job
 preparation, response retrieval, result persistence, final validation, and
@@ -1362,19 +1418,27 @@ fails safely instead of creating an unowned `submitted` state.
 
 Starting a new run checks existing owner runs.
 
+An active primary cloud run remains active until its saved cloud deadline;
+the shorter legacy thresholds below do not terminate a healthy hourly queue.
+Expiry is closed through `finish_primary_cloud_ideation` so both runs agree.
+
 Local pipeline stages are stale after six hours. External-research stages are
 stale after 12 hours. A stale research run is closed through
 `fail_research_job` so the job and run do not disagree.
 
 There is no independent queue-monitoring cron. Stale-run cleanup happens when a
 new run is requested, while expired research claims are handled by the next
-claim operation. In production that claim occurs inside the same daily Workflow;
-an optional MCP invocation can use the same queue semantics.
+claim operation. Cloud claims are handled by the hourly child; legacy API
+claims occur inside the daily Workflow, and optional MCP invocations retain
+the same legacy queue semantics.
 
 ## 18. Evidence retention
 
 Raw X post text, official `source_context`, and legacy exact Luna excerpts are
 retained for 30 days.
+Primary publication also retains an immutable `research_jobs` payload/result
+copy under the existing research-job policy. The opportunistic 48-hour purge of
+cloud run inputs and cloud job payloads does not erase that bridge copy.
 
 At the start of a fetch step, the application:
 
@@ -1434,14 +1498,16 @@ after login.
 ### `/`
 
 Dashboard showing recent run state, counts, and latest ideas. The run-state UI
-includes prepared API research, active research, and final validation.
+includes waiting research, active research and final validation, driven by the
+source run state maintained by the trusted coordinator. The generated-ideas
+counter uses cloud generation counts with legacy cluster-count fallback.
 
 ### `/posts`
 
 Collected-post inspection, including X link, text while retained, source lane,
 captured engagement, ranking, and analysis state.
 
-Shortlisted posts have an expandable Model decisions panel containing the
+Historical API-shortlisted posts have an expandable Model decisions panel containing the
 saved Sol candidate or no-viable-idea result, decision reason, three concepts
 and critiques, and selected idea details. It also shows the shortlist
 assessment and available Luna context/filter decisions. Automatic shortlist
@@ -1453,14 +1519,18 @@ source feed available and marks the panel unavailable. Missing results are
 shown as pending only while the run can still generate them, otherwise as no
 saved response. The panel does not infer research or publication decisions.
 
-The cloud comparison panel shows separate run and job progress, requested model
+The cloud panel loads both primary and historical shadow modes and shows run
+and job progress, requested model
 and reasoning, and an explicitly unverified actual model. Cloud shortlist
-assessments and independent generation appear beside the API panels, including
+assessments and independent generation appear beside historical API panels, including
 posts selected only by cloud and posts cloud held or rejected. The Cloud
 shortlisted posts filter uses that independent selection. Submitted responses
 are labeled as awaiting validation; final comparison reports expose the
 research summary, ideas that passed checks and worker-reported source links.
-These are comparison results, not published ideas. Owner/run-scoped queries
+Primary results show cloud research and links to actual published idea IDs;
+historical shadow results remain explicitly comparison-only. Primary run
+snapshots hide the separate comparison-start action and API-only decision
+panels, while keeping shared Luna context visible. Owner/run-scoped queries
 select explicit display fields and do not load model payloads or runtime
 metadata into the page. Eligible older runs offer Run cloud comparison.
 
@@ -1494,7 +1564,7 @@ Private Supabase OAuth approval UI for the MCP client.
 | Commercial filter | Luna, up to 30 posts |
 | Context hydration | Luna, only `needs_context` posts; at most 5 context sources each |
 | Maximum shortlisted posts | 8 |
-| Candidate generation | One isolated Sol request per shortlisted post; exactly 3 concepts considered |
+| Candidate generation | One isolated cloud child per shortlisted post; exactly 3 concepts considered |
 | Candidate result per post | 0 or 1 |
 | Candidates sent to research | At most 3 after exact and semantic deduplication |
 | Official-search fallback minimum views | 19,000 |
@@ -1502,18 +1572,21 @@ Private Supabase OAuth approval UI for the MCP client.
 | Official-search fallback ranking weights | views 65%, comments 20%, likes 10%, saves 5% |
 | Research schema version | 2 |
 | Research prompt version | `candidate_research_v2` |
-| Research model | `gpt-5.6-sol` |
-| Research reasoning | `high` |
-| Hosted web-search context | `medium` |
-| Maximum research tool calls | 20 |
-| Maximum research output | 32,000 tokens |
-| Background-response deadline | 30 minutes |
-| Response polling interval | 10 seconds, increasing to 30 seconds |
-| Maximum job or result JSON | 1 MiB each |
+| Requested cloud model and reasoning | `gpt-5.6-sol`, `high`; actual runtime unverified |
+| Cloud worker cadence | Hourly; one new isolated child and one job per execution |
+| Cloud run deadline / coordinator poll | 24 hours / one-minute durable sleeps, up to 1,440 checks |
+| Cloud claim lease | 30 minutes, capped by the run deadline |
+| Cloud input / result JSON | At most 1 MiB / 256 KiB |
+| API rollback hosted web-search context | `medium` |
+| API rollback maximum research tool calls | 20 |
+| API rollback maximum research output | 32,000 tokens |
+| API rollback background-response deadline | 30 minutes |
+| API rollback response polling interval | 10 seconds, increasing to 30 seconds |
+| API/MCP job or result JSON | At most 1 MiB each |
 | MCP POST limit | 1.25 MB |
-| Research claim lease | 2 hours |
+| API/MCP research claim lease | 2 hours |
 | Maximum claim attempts | 3 |
-| Failure retry delay | 15 minutes |
+| API/MCP failure retry delay | 15 minutes |
 | Maximum external sources | 40 |
 | External sources per idea | 1 to 10 |
 | Maximum researched candidates | 3 |
@@ -1544,10 +1617,10 @@ Private Supabase OAuth approval UI for the MCP client.
 
 ## 22. Required operator setup
 
-The production API path needs only the application deployment, its server-only
-provider credentials, the database schema, and the one daily Vercel cron. It
-does not require Supabase OAuth, a private plugin, a ChatGPT/Codex connection,
-or a second cloud schedule.
+Cloud-primary production needs the application deployment, server-only provider
+credentials, database schema, one daily Vercel cron, and the active hourly
+ChatGPT Work schedule with its Supabase connection and saved isolated-child
+prompt. The private Signal Foundry MCP connector is not required.
 
 The repository implements this path. A deployment is operational only after it
 has been rebuilt from this revision and the end-to-end check below succeeds.
@@ -1563,6 +1636,7 @@ Apply every file in `supabase/migrations` in filename order, including:
 006_post_first_ideation.sql
 20260904235628_cloud_ideation_shadow_queue.sql
 20260905001502_cloud_ideation_hourly_deadline.sql
+20260905014539_cloud_ideation_primary_publication.sql
 ```
 
 Together these create the queue, external evidence tables, research RPCs, stage
@@ -1576,12 +1650,15 @@ worker RPCs, immutable input/result triggers, owner browser read policies and
 terminal-input retention function.
 The hourly-deadline migration gives new comparisons a 24-hour window without
 changing deadlines already saved on existing comparisons.
+The primary-publication migration allows immutable primary mode, synchronizes
+source-run progress, and adds service-only atomic finish/publication functions.
 
 ### 2. Configure server-only production values
 
 Set every required value in section 23 in the Vercel project. In particular,
-the OpenAI key must be available to Workflow steps so Sol can create, retrieve,
-and, when necessary, cancel a stored background response. The X bearer token,
+the OpenAI key must remain available for shared Luna filtering/context and
+embeddings. Retained API rollback can also create/retrieve/cancel Sol responses;
+new cloud-provider runs do not call those Sol adapters. The X bearer token,
 Supabase secret, and cron secret remain server-only.
 
 ### 3. Deploy and confirm the single cron
@@ -1592,25 +1669,24 @@ Deploy the application and confirm `vercel.json` contains only:
 GET /api/cron/daily at 13:00 UTC
 ```
 
-No research polling cron or ChatGPT/Codex scheduled task is required for API
-publication. The comparison worker has separate operator setup below; it does
-not alter this Vercel cron.
+No research polling cron is added. Cloud-primary model work requires the hourly
+ChatGPT Work worker below; it does not alter this daily Vercel cron.
 
 ### 4. Perform one production end-to-end check
 
 1. Start a manual run.
-2. If its posts yield a candidate after filtering, context hydration,
-   shortlisting, generation, and deduplication, confirm it creates one pending
-   job and proceeds from `research_queued` to `researching` without operator
-   intervention.
-3. Confirm the job reaches `claimed`, `submitted`, `validating`, and
-   `completed` within the same daily Workflow execution.
-4. Confirm the run ends as `completed` or `no_ideas`.
-5. Confirm `runs.usage.research` contains bounded token and web-search counts
-   plus the response ID, without secrets or payload content.
+2. Confirm `settings_snapshot.ideation_provider = chatgpt_cloud`, shared Luna
+   completes, and the daily Workflow dispatches `mode = primary` without any
+   Sol Responses API call or automatic fallback.
+3. Confirm separate cloud shortlist/candidate/research jobs move through claims,
+   submission and trusted validation under the cloud coordinator.
+4. Confirm the cloud and source run agree on `completed`, `no_ideas` or failure,
+   and saved idea IDs match the actual published idea rows.
+5. Confirm usage separates server-side Luna/embeddings from cloud jobs whose
+   runtime model and token usage are unverified/unavailable.
 6. If ideas publish, verify both X and external evidence on an idea page.
 
-### Cloud comparison worker setup and verification status
+### Cloud worker setup and verification status
 
 Apply the cloud migration and deploy the coordinator, queue integration and
 owner route. Configure a standalone **ChatGPT Work cloud schedule** with the
@@ -1645,12 +1721,23 @@ and research source access remains worker-reported. Comparison-only storage
 and unchanged API publication were verified. The instructions and connection
 requirements are in the
 [`cloud integration README`](./integrations/chatgpt-cloud-ideation/README.md).
-API provider cutover remains a separate change after reviewing those results.
+That completed test was a shadow comparison before the primary cutover. The
+repository now defaults new runs to cloud, while the last verified production
+deployment and worker test below were still API-authoritative. The primary
+migration is applied and its rolled-back database contract test passed. Deploy
+and verify the new publication path, then save the updated
+worker prompt before its first primary claim. Primary deployment verification
+is tracked separately from the historical test.
+
+For explicit rollback, change `PIPELINE.ideationProvider` in
+`src/lib/config.js` to `api` and deploy. It affects newly created runs only;
+existing cloud runs retain their saved provider/mode and should finish or fail
+through their coordinator. No failure path silently enables Sol API calls.
 
 ### Optional MCP setup and current status
 
 The OAuth-protected MCP surface remains deployed for manual use or a future
-eligible scheduler. It is separate from the production API path.
+eligible scheduler. It is separate from the production cloud worker.
 
 Its required operator configuration is:
 
@@ -1673,7 +1760,7 @@ retained legacy evidence only, and its synthetic rows were removed afterward.
 An earlier unattended task on the personal Pro account did not expose the
 private skill or MCP tools. Its nonfunctional hourly heartbeat was deleted.
 That observation concerns the private Signal Foundry MCP path; production
-continues to use the API-backed daily Workflow.
+remained on the API-backed daily Workflow at that historical checkpoint.
 
 On September 4, 2026, a one-time cloud ChatGPT Work schedule using the installed
 Supabase plugin completed without an approval prompt. An independent database
@@ -1866,6 +1953,9 @@ CRON_SECRET
 ```
 
 Only the two `NEXT_PUBLIC_*` values may be used in browser code.
+The OpenAI key remains required for Luna and embeddings after the Sol cutover.
+The ideation provider is a repository configuration value snapshotted per run,
+not a browser setting or a new environment secret.
 
 ### MCP overrides
 
@@ -2011,7 +2101,12 @@ Useful run counters include:
 - ideas saved;
 - partial X retrieval.
 
-Usage records cover Luna filtering/context, Sol shortlisting/generation and
+Primary run usage separates Luna filtering/context and embedding API calls from
+`chatgpt_cloud` job metadata: provider, requested model/reasoning and saved job
+status. Cloud token usage is unavailable and model verification remains false;
+no API usage or response IDs are fabricated for cloud execution.
+
+Retained API-run usage records cover Luna filtering/context, Sol shortlisting/generation and
 accepted research, plus embedding calls. The
 top-level `research` usage entry records model and response ID, input, cached,
 output, reasoning, and total tokens, plus completed web-search calls for the
@@ -2027,18 +2122,20 @@ seven-day validation plan identify what still needs real-world testing.
 
 ## 26. Known boundaries
 
-- One daily or manual Workflow carries one run through API research; its queue
-  needs no independent worker or watchdog cron. The additive cloud comparison
-  has a separate coordinator and scheduled worker (section 30).
-- Each database claim makes one non-retried response-creation POST. OpenAI does
+- The daily/manual Workflow performs collection and shared Luna work, then
+  hands primary research to a separate durable coordinator and hourly cloud
+  worker. There is no extra Vercel polling cron. The retained API rollback
+  path completes inside the daily Workflow (section 30).
+- In API rollback, each database claim makes one non-retried response-creation POST. OpenAI does
   not document creation idempotency, and a job can consume up to three
   potentially billable claim attempts after bounded failures.
-- Hosted research is capped at 20 tool calls, 32,000 output tokens, and a
+- API rollback research is capped at 20 tool calls, 32,000 output tokens, and a
   30-minute response deadline per attempt.
-- Source claims are structurally linked, and the API adapter proves only that a
+- Source claims are structurally linked. Cloud source access is worker-reported;
+  the retained API adapter proves only that a
   returned page was opened or cited in the response. No independent crawler
   fact-checks the claim or fetches a model-submitted URL.
-- This application uses `store: true` so it can poll background Responses
+- The retained API adapter uses `store: true` so it can poll background Responses
   durably. The accepted response ID is retained in `runs.usage.research`, while
   stored responses are deleted best-effort after a handled success or failure.
 - If a create request has an ambiguous transport outcome and returns no response
@@ -2051,7 +2148,7 @@ seven-day validation plan identify what still needs real-world testing.
   bounded by Workflow state reads, leases, and the database attempt counter.
 - Optional MCP use still depends on OAuth authorization and the connected
   account's support for private write-capable tools. That limitation does not
-  affect the production API path.
+  affect the production cloud path or retained API rollback.
 - The For You collector contributes only ordered discovery IDs and feed
   positions. AWS deployment and on-demand invocation support are implemented.
   The Workflow hydrates candidates through the official X API before selecting
@@ -2082,6 +2179,7 @@ These are current operating boundaries, not alternate execution paths.
 - [`src/lib/cloud-ideation/dispatch.js`](./src/lib/cloud-ideation/dispatch.js)
 - [`src/lib/cloud-ideation/engine.js`](./src/lib/cloud-ideation/engine.js)
 - [`src/lib/cloud-ideation/contracts.js`](./src/lib/cloud-ideation/contracts.js)
+- [`src/lib/cloud-ideation/publication.js`](./src/lib/cloud-ideation/publication.js)
 - [`integrations/chatgpt-cloud-ideation/README.md`](./integrations/chatgpt-cloud-ideation/README.md)
 - [`integrations/chatgpt-cloud-ideation/worker-prompt.md`](./integrations/chatgpt-cloud-ideation/worker-prompt.md)
 - [`vercel.json`](./vercel.json)
@@ -2170,6 +2268,7 @@ These are current operating boundaries, not alternate execution paths.
 - [`supabase/migrations/006_post_first_ideation.sql`](./supabase/migrations/006_post_first_ideation.sql)
 - [`supabase/migrations/20260904235628_cloud_ideation_shadow_queue.sql`](./supabase/migrations/20260904235628_cloud_ideation_shadow_queue.sql)
 - [`supabase/migrations/20260905001502_cloud_ideation_hourly_deadline.sql`](./supabase/migrations/20260905001502_cloud_ideation_hourly_deadline.sql)
+- [`supabase/migrations/20260905014539_cloud_ideation_primary_publication.sql`](./supabase/migrations/20260905014539_cloud_ideation_primary_publication.sql)
 - [`src/app/posts/page.js`](./src/app/posts/page.js)
 - [`src/app/api/runs/[id]/cloud-comparison/route.js`](./src/app/api/runs/[id]/cloud-comparison/route.js)
 - [`src/components/cloud-model-decisions.jsx`](./src/components/cloud-model-decisions.jsx)
@@ -2238,12 +2337,13 @@ is stored only under the private, versioned S3 `deployment/` prefix; results do
 not use S3. Human approval expiry is an operator/renewal concern and does not
 add another runtime flag or service.
 
-## 30. ChatGPT cloud ideation comparison
+## 30. Cloud primary research and historical comparisons
 
-This implemented branch is always `shadow`: its decisions and final report are
-stored separately, and the API path remains authoritative for publication. It
-shares the retained X posts, Luna commercial filtering and resolved linked
-context, then makes an independent commercial selection:
+New cloud-provider runs use immutable `mode = primary`; their trusted final
+validation publishes qualifying ideas to the normal reports. Existing
+`mode = shadow` comparisons remain immutable and unpublished. Both modes share
+retained X posts, Luna commercial filtering and resolved linked context, then
+make an independent commercial selection:
 
 ```text
 Shared Luna survivors and resolved context
@@ -2253,7 +2353,8 @@ Shared Luna survivors and resolved context
   -> immutable top-3 research payload
   -> one cloud research job with public-web sources
   -> trusted evidence/product validation and final duplicate checks
-  -> cloud comparison report only; zero to three ideas, published = false
+  -> primary: atomically publish zero to three ideas and complete the source run
+     shadow: comparison report only, published = false
 ```
 
 The payloads reuse the existing shortlist, candidate-generation and research
@@ -2269,7 +2370,9 @@ and embedding calls remain OpenAI Platform calls.
 
 After validating generation results, the Vercel coordinator sorts by selected
 idea score and applies the existing exact/semantic duplicate rules before
-admitting at most three candidates. Historical comparisons use only the
+admitting at most three candidates. Primary runs check all current owner ideas
+outside their own run, including ideas published while cloud work was waiting.
+Historical shadow comparisons use only the
 owner's ideas created before the source API run's saved `started_at` (or
 `created_at` fallback), and explicitly exclude ideas from that API run. This
 prevents the concurrent API result from being treated as prior historical
@@ -2279,14 +2382,19 @@ evidence grounding and the product contract, then deduplicates again against
 the same historical cutoff and within the final batch. The report retains
 assessments, ideas, source records, rejected candidate reason codes, counts,
 embedding usage and the unverified-runtime/worker-reported-source qualifiers.
-It never writes API shortlist/candidate checkpoints, `research_jobs`, published
-`ideas` or their source-link tables.
+Primary mode publishes through `publish_primary_cloud_ideas`, which bridges to
+the existing trusted research publication transaction and writes the normal
+idea/evidence rows plus actual result `idea_ids`. Its `published` flag is true
+only for an actual nonempty publication. Shadow mode never invokes that bridge
+or writes published ideas, source links or API decision checkpoints.
 
 ### Coordination, claims and access
 
-The daily Workflow attempts cloud dispatch after Luna survivors are resolved
-and before API shortlisting. Dispatch errors are caught so the API path
-continues. It does not wait for cloud model work. The separate `cloudIdeation`
+The daily Workflow reads the run's saved provider after Luna survivors are
+resolved. For `chatgpt_cloud`, it dispatches primary mode and returns without
+calling Sol APIs; dispatch failure closes the attempt rather than enabling
+an API fallback. Explicit `api` rollback retains its independent shadow dispatch
+and proceeds through the retained API stages. The separate `cloudIdeation`
 Workflow advances saved state, sleeps durably for one minute between checks
 and enforces the run's saved deadline, with at most 1,440 polling iterations.
 New comparisons receive a 24-hour deadline; earlier immutable deadlines remain
@@ -2331,8 +2439,10 @@ to erase run inputs and job payloads for terminal comparisons created at least
 48 hours earlier. Responses, assessments and reports remain available for
 comparison. This cleanup is opportunistic, not a separate timer. Operator
 schedule setup and the current verification status are recorded in section 22.
+The primary publisher's immutable copy in `research_jobs` remains under the
+existing research-job retention policy; this cloud purge does not remove it.
 
-### Live deployment and verification checkpoint: September 5, 2026 UTC
+### Historical shadow verification before cutover: September 5, 2026 UTC
 
 Commit `255653aea30f455fead054afd743d9062bded0cb` was deployed as Vercel
 deployment `9KtfVACrVjqskwfWG4Jps53ttnaS`, which reached `READY`. Both cloud
@@ -2402,3 +2512,22 @@ two, both exactly matching the pre-comparison baseline. The production API
 path remained enabled and authoritative. The completed comparison did not
 publish its idea or alter the API run. Runtime model identity remains
 unverified, and source access remains worker-reported.
+
+### Primary cutover code and database verification: September 5, 2026 UTC
+
+The cloud-primary code passed all 339 automated tests and the production build.
+Coverage includes the provider branch, primary publication preparation,
+historical shadow behavior, published-idea links, and the owner route's
+rejection of a separate comparison for a primary run.
+
+Primary publication migration `20260905014539` was applied. A live database
+contract test passed using the real claim/submission RPCs and existing atomic
+publisher inside a rolled-back transaction. It verified nonempty publication
+with X and external evidence links, replay idempotency, rejection of shadow
+publication, empty/failure completion, and preservation of Luna usage with
+correct embedding accumulation. All fixture changes were rolled back; the
+production published idea count remained two.
+
+The source cutover deployment, saved schedule-prompt update and first live
+primary publication remain to be verified. The shadow execution above is
+retained as historical evidence and is not labeled a primary run.

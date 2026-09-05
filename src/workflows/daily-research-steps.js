@@ -69,6 +69,18 @@ async function loadRun(db, runId, ownerId) {
   return data;
 }
 
+export async function readIdeationProvider({ runId, ownerId }) {
+  "use step";
+  requireWorkflowArgs({ runId, ownerId });
+  const run = await loadRun(createSupabaseAdminClient(), runId, ownerId);
+  const provider = run.settings_snapshot?.ideation_provider || PIPELINE.ideationProvider;
+  if (!["chatgpt_cloud", "api"].includes(provider)) {
+    throw new Error("The run's ideation provider is unsupported.");
+  }
+  return provider;
+}
+readIdeationProvider.maxRetries = 3;
+
 async function updateRun(db, runId, ownerId, values) {
   const { data, error } = await db
     .from("runs")

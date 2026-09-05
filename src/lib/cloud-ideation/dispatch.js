@@ -16,15 +16,15 @@ async function closeFailedDispatch(runId, ownerId) {
   }
 }
 
-/** Dispatch a separate comparison; this never starts or replaces the API run. */
-export async function startCloudComparison({ runId, ownerId, survivorPostIds }) {
+/** Dispatch the requested immutable cloud mode; primary replaces the Sol API stages. */
+export async function startCloudComparison({ runId, ownerId, survivorPostIds, mode = "shadow" }) {
   const db = createSupabaseAdminClient();
   const { error: retentionError } = await db.rpc("purge_cloud_model_payloads", {
     p_owner_id: ownerId,
   });
   if (retentionError) throw new Error("Expired cloud comparison inputs could not be removed.");
   // Retention must succeed before inserting anything that needs a coordinator.
-  await createCloudIdeationRun({ runId, ownerId, survivorPostIds });
+  await createCloudIdeationRun({ runId, ownerId, survivorPostIds, mode });
   let comparison;
   try {
     const { data, error } = await db
@@ -42,8 +42,8 @@ export async function startCloudComparison({ runId, ownerId, survivorPostIds }) 
   if (TERMINAL.has(comparison.status) || comparison.workflow_run_id) return comparison;
 
   // A transport retry may dispatch twice. Cloud checkpoints and unique job keys
-  // are idempotent, and model claims are atomic, so neither can publish or steal
-  // a job from the API pipeline.
+  // are idempotent, and model claims/publication are atomic, so coordinators
+  // cannot publish twice or consume jobs from the retained API pipeline.
   let workflow;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {

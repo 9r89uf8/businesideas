@@ -206,12 +206,13 @@ export function selectCloudCandidates(candidates, embeddings, history, limit = P
   return { accepted, rejected };
 }
 
-export function emptyCloudReport(notes, previous = {}) {
+export function emptyCloudReport(notes, previous = {}, mode = "shadow") {
+  if (!["shadow", "primary"].includes(mode)) throw new TypeError("Unsupported cloud mode.");
   return {
     assessment: { overall_evidence: "insufficient", notes }, ideas: [], sources: [], rejected: [],
     counts: {}, usage: { embeddings: { input_tokens: 0 } },
     verification: { runtime_model: "unverified", source_access: "worker_reported" },
     ...previous,
-    mode: "shadow", published: false,
+    mode, published: false, idea_ids: [],
   };
 }

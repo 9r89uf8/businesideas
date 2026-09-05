@@ -10,7 +10,7 @@ export async function cloudIdeation({ runId, ownerId }) {
   "use workflow";
 
   // The scheduled cloud model writes only leased queue results. This trusted
-  // coordinator validates them and advances the separate comparison pipeline.
+  // coordinator validates them and advances the saved primary/comparison mode.
   for (let poll = 0; poll < 1440; poll += 1) {
     let state;
     try {
@@ -19,7 +19,7 @@ export async function cloudIdeation({ runId, ownerId }) {
       await stopCloudComparison({
         runId,
         ownerId,
-        message: "The cloud comparison could not be processed after retries.",
+        message: "The cloud ideation could not be processed after retries.",
       });
       return { status: "failed", runId };
     }
@@ -30,7 +30,7 @@ export async function cloudIdeation({ runId, ownerId }) {
   await stopCloudComparison({
     runId,
     ownerId,
-    message: "Cloud comparison exceeded its 24-hour deadline.",
+    message: "Cloud ideation exceeded its 24-hour deadline.",
   });
   return { status: "failed", runId };
 }

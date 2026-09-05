@@ -19,9 +19,12 @@ export async function POST(_request, { params }) {
   try {
     const db = createSupabaseAdminClient();
     const { data: run, error: runError } = await db.from("runs")
-      .select("id").eq("id", runId).eq("owner_id", ownerId).maybeSingle();
+      .select("id, settings_snapshot").eq("id", runId).eq("owner_id", ownerId).maybeSingle();
     if (runError) throw new Error("Run lookup failed.");
     if (!run) return json({ error: "Run not found." }, 404);
+    if (run.settings_snapshot?.ideation_provider === "chatgpt_cloud") {
+      return json({ error: "This run already uses cloud research. A separate comparison cannot be started." }, 409);
+    }
 
     const { data: posts, error } = await db.from("run_posts")
       .select("post_id, filter_decision, hydrated_context")

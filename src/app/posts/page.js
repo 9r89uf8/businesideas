@@ -1,5 +1,5 @@
 import Link from "next/link";
-import ModelDecisions from "@/components/model-decisions";
+import ModelDecisions, { LinkedContextDecision } from "@/components/model-decisions";
 import CloudModelDecisions, { CloudComparison } from "@/components/cloud-model-decisions";
 import { requireOwner } from "@/lib/auth";
 import { POST_QUALITY } from "@/lib/config";
@@ -54,7 +54,7 @@ function sourceBadgeClass(channel) {
   return "bg-[var(--ink)]/7 text-[var(--ink-soft)]";
 }
 
-function PostCard({ snapshot, rankingVersion, minimumViews, run, decisionsError, cloudRun, cloudError }) {
+function PostCard({ snapshot, rankingVersion, minimumViews, run, decisionsError, cloudRun, cloudError, primaryCloud }) {
   const post = snapshot.post;
   const metrics = snapshot.metrics || {};
   const qualityMetrics = [
@@ -99,7 +99,7 @@ function PostCard({ snapshot, rankingVersion, minimumViews, run, decisionsError,
             Kept for ideation
           </span>
         )}
-        {snapshot.shortlisted && (
+        {!primaryCloud && snapshot.shortlisted && (
           <span className="rounded-full bg-[var(--moss)]/10 px-2.5 py-1 text-[0.68rem] font-bold text-[var(--moss)]">
             API shortlisted
           </span>
@@ -188,7 +188,7 @@ function PostCard({ snapshot, rankingVersion, minimumViews, run, decisionsError,
           </div>
         )}
 
-        {snapshot.shortlisted && (
+        {!primaryCloud && snapshot.shortlisted && (
           <ModelDecisions
             snapshot={snapshot}
             candidateResult={snapshot.candidate_result}
@@ -197,6 +197,10 @@ function PostCard({ snapshot, rankingVersion, minimumViews, run, decisionsError,
             shortlistSkipped={run?.counts?.shortlist_skipped === true}
             loadError={decisionsError}
           />
+        )}
+
+        {primaryCloud && snapshot.hydrated_context && (
+          <div className="mt-4"><LinkedContextDecision context={snapshot.hydrated_context} /></div>
         )}
 
         <CloudModelDecisions
@@ -221,7 +225,7 @@ export default async function PostsPage({ searchParams }) {
   const requestedSource = clean(params?.source, 20);
   const requestedView = clean(params?.view, 20);
   const source = SOURCE_FILTERS.has(requestedSource) ? requestedSource : "all";
-  const view = VIEW_FILTERS.has(requestedView) ? requestedView : "all";
+  let view = VIEW_FILTERS.has(requestedView) ? requestedView : "all";
   const { ownerId, supabase } = await requireOwner();
 
   const { data: runs, error: runsError } = await supabase
@@ -241,6 +245,7 @@ export default async function PostsPage({ searchParams }) {
   let cloudJobs = [];
   let cloudError = false;
   let canStartCloud = false;
+  let primaryCloud = selectedRun?.settings_snapshot?.ideation_provider === "chatgpt_cloud";
 
   if (selectedRun && !pageError) {
     const snapshotQuery = supabase
@@ -256,10 +261,10 @@ export default async function PostsPage({ searchParams }) {
         .limit(500),
       supabase
         .from("cloud_ideation_runs")
-        .select("id, status, phase, shortlist_result, result, error_message")
+        .select("id, mode, status, phase, shortlist_result, result, error_message")
         .eq("owner_id", ownerId)
         .eq("id", selectedRun.id)
-        .eq("mode", "shadow")
+        .in("mode", ["primary", "shadow"])
         .maybeSingle(),
       supabase
         .from("cloud_model_jobs")
@@ -278,6 +283,8 @@ export default async function PostsPage({ searchParams }) {
       ? cloudRunResult.value.data : null;
     cloudJobs = cloudRun && cloudJobsResult.status === "fulfilled" && !cloudJobsResult.value.error
       ? cloudJobsResult.value.data || [] : [];
+    if (cloudRun) primaryCloud = cloudRun.mode === "primary";
+    if (primaryCloud && view === "shortlisted") view = "cloud_shortlisted";
 
     if (snapshots.length && !pageError) {
       const postIds = snapshots.map((snapshot) => snapshot.post_id);
@@ -287,7 +294,7 @@ export default async function PostsPage({ searchParams }) {
           .select("x_post_id, author_username, text, url, x_created_at, availability")
           .eq("owner_id", ownerId)
           .in("x_post_id", postIds),
-        supabase
+        primaryCloud ? Promise.resolve({ data: [], error: null }) : supabase
           .from("clusters")
           .select("source_post_id, candidate_result")
           .eq("owner_id", ownerId)
@@ -329,7 +336,7 @@ export default async function PostsPage({ searchParams }) {
           cloudAssessmentsByPostId.get(snapshot.post_id)?.advanced === true ||
           cloudAssessmentsByPostId.get(snapshot.post_id)?.decision === "advance",
       }));
-      canStartCloud = snapshots.some((snapshot) => snapshot.selected_for_ai && snapshot.post?.text && (
+      canStartCloud = !primaryCloud && snapshots.some((snapshot) => snapshot.selected_for_ai && snapshot.post?.text && (
         snapshot.filter_decision === "keep" ||
         (snapshot.filter_decision === "needs_context" && snapshot.hydrated_context?.status === "resolved")
       ));
@@ -399,7 +406,7 @@ export default async function PostsPage({ searchParams }) {
             <option value="all">All retrieved (includes rejected)</option>
             <option value="selected">Sent to post filter</option>
             <option value="signals">Filter survivors</option>
-            <option value="shortlisted">API shortlisted posts</option>
+            {!primaryCloud && <option value="shortlisted">API shortlisted posts</option>}
             <option value="cloud_shortlisted">Cloud shortlisted posts</option>
           </select>
         </label>
@@ -442,6 +449,8 @@ export default async function PostsPage({ searchParams }) {
           loadError={cloudError}
           sourceRunId={selectedRun.id}
           canStart={canStartCloud}
+          primary={primaryCloud}
+          sourceRunStatus={selectedRun.status}
         />
       )}
 
@@ -466,6 +475,7 @@ export default async function PostsPage({ searchParams }) {
               decisionsError={decisionsError}
               cloudRun={cloudRun}
               cloudError={cloudError}
+              primaryCloud={primaryCloud}
             />
           ))}
         </section>

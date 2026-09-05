@@ -1,7 +1,9 @@
 import { PIPELINE } from "../config.js";
 import { fingerprintIdea } from "../fingerprints.js";
 import { buildResearchJobPayload } from "../prompts/generate-ideas.js";
+import { hashResearchJson } from "../research/canonical-json.js";
 import { validateResearchResult } from "../validation.js";
+import { cloudPublicationRows, cloudRunUsage } from "./publication.js";
 import {
   CLOUD_TERMINAL_STATUSES, automaticCloudShortlist, cloneBoundedJson,
   cloudCandidateForDedup, cloudCandidatePayload, cloudResearchPayload, cloudShortlistPayload,
@@ -12,8 +14,8 @@ import {
 const ACTIVE = ["pending", "running"];
 const WAITING_JOBS = ["pending", "claimed", "submitted"];
 const TERMINAL_JOBS = new Set(["completed", "failed"]);
-const DEADLINE_MESSAGE = "Cloud comparison exceeded its 24-hour deadline.";
-const FAILURE_MESSAGE = "Cloud comparison could not be completed.";
+const DEADLINE_MESSAGE = "Cloud ideation exceeded its 24-hour deadline.";
+const FAILURE_MESSAGE = "Cloud ideation could not be completed.";
 
 function check(error, operation) {
   if (error) throw new Error(`Cloud comparison could not ${operation}.`, { cause: error });
@@ -29,7 +31,8 @@ function resultWithoutEmbedding(idea) {
 }
 
 // Dependencies are explicit so state transitions can be verified without any
-// database credentials, model calls, or production queue/publication helpers.
+// database credentials or model calls. Primary publication is an atomic RPC;
+// shadow runs cannot enter that branch.
 export function createCloudIdeationService({ db, embedTexts, now = () => new Date() }) {
   const timestamp = () => now().toISOString();
 
@@ -37,7 +40,7 @@ export function createCloudIdeationService({ db, embedTexts, now = () => new Dat
     const { data, error } = await db.from("cloud_ideation_runs").select("*")
       .eq("id", runId).eq("owner_id", ownerId).maybeSingle();
     check(error, "load its saved run");
-    if (data && data.mode !== "shadow") throw new Error("Only shadow cloud comparison is supported.");
+    if (data && !["shadow", "primary"].includes(data.mode)) throw new Error("The cloud ideation mode is unsupported.");
     return data;
   }
 
@@ -51,7 +54,7 @@ export function createCloudIdeationService({ db, embedTexts, now = () => new Dat
   async function updateRun(run, values, { onlyEmptyResult = false } = {}) {
     let query = db.from("cloud_ideation_runs")
       .update({ ...values, updated_at: timestamp() })
-      .eq("id", run.id).eq("owner_id", run.owner_id).eq("mode", "shadow")
+      .eq("id", run.id).eq("owner_id", run.owner_id).eq("mode", run.mode)
       .in("status", ACTIVE).eq("phase", run.phase);
     if (onlyEmptyResult) query = query.is("result", null);
     const { data, error } = await query.select("*").maybeSingle();
@@ -67,6 +70,20 @@ export function createCloudIdeationService({ db, embedTexts, now = () => new Dat
   }
 
   async function finish(run, report, status = report.ideas.length ? "completed" : "no_ideas") {
+    if (run.mode === "primary") {
+      if (status !== "no_ideas" || report.ideas.length) throw new Error("Primary ideas require atomic publication.");
+      const jobs = await loadJobs(run);
+      const { data, error } = await db.rpc("finish_primary_cloud_ideation", {
+        p_owner_id: run.owner_id, p_run_id: run.id,
+        p_report: { ...report, mode: "primary", usage: cloudRunUsage(jobs, report.usage) },
+        p_error_message: null,
+      });
+      check(error, "complete its primary run");
+      const saved = data?.[0];
+      if (!saved || !CLOUD_TERMINAL_STATUSES.has(saved.status)) throw new Error("The primary completion checkpoint is incomplete.");
+      await stopWaitingJobs(saved, "Cloud ideation has already finished.");
+      return saved;
+    }
     const saved = await updateRun(run, {
       status, phase: "done", result: report, error_message: null, completed_at: timestamp(),
     });
@@ -81,9 +98,22 @@ export function createCloudIdeationService({ db, embedTexts, now = () => new Dat
     const run = await loadRun(runId, ownerId);
     if (!run) return { id: runId, status: "failed", phase: "done" };
     const safeMessage = message === DEADLINE_MESSAGE ? DEADLINE_MESSAGE : FAILURE_MESSAGE;
-    const saved = CLOUD_TERMINAL_STATUSES.has(run.status) ? run : await updateRun(run, {
-      status: "failed", phase: "done", error_message: safeMessage, completed_at: timestamp(),
-    });
+    let saved = run;
+    if (!CLOUD_TERMINAL_STATUSES.has(run.status)) {
+      if (run.mode === "primary") {
+        const jobs = await loadJobs(run);
+        const report = emptyCloudReport(safeMessage, run.result || {}, run.mode);
+        report.usage = cloudRunUsage(jobs, report.usage);
+        const { data, error } = await db.rpc("finish_primary_cloud_ideation", {
+          p_owner_id: ownerId, p_run_id: runId, p_report: report, p_error_message: safeMessage,
+        });
+        check(error, "record its primary failure");
+        saved = data?.[0];
+        if (!saved || !CLOUD_TERMINAL_STATUSES.has(saved.status)) throw new Error("The primary failure checkpoint is incomplete.");
+      } else {
+        saved = await updateRun(run, { status: "failed", phase: "done", error_message: safeMessage, completed_at: timestamp() });
+      }
+    }
     // The run status also gates queue claims, including while this cleanup retries.
     if (saved && CLOUD_TERMINAL_STATUSES.has(saved.status)) await stopWaitingJobs(saved, safeMessage);
     return saved;
@@ -128,11 +158,13 @@ export function createCloudIdeationService({ db, embedTexts, now = () => new Dat
     const history = [];
     const pageSize = 200;
     for (let offset = 0; offset < 10_000; offset += pageSize) {
-      const { data, error } = await db.from("ideas")
+      let query = db.from("ideas")
         .select("id, target_customer, problem, fingerprint_hash, embedding")
-        .eq("owner_id", run.owner_id).neq("run_id", run.id)
-        .lt("created_at", run.input.history_cutoff)
-        .order("id", { ascending: true }).range(offset, offset + pageSize - 1);
+        .eq("owner_id", run.owner_id).neq("run_id", run.id);
+      // Comparisons use the source run's historical universe; authoritative
+      // publication must also catch ideas saved while the cloud worker ran.
+      if (run.mode === "shadow") query = query.lt("created_at", run.input.history_cutoff);
+      const { data, error } = await query.order("id", { ascending: true }).range(offset, offset + pageSize - 1);
       check(error, "read historical duplicate evidence");
       history.push(...(data || []));
       if ((data || []).length < pageSize) return history;
@@ -140,23 +172,30 @@ export function createCloudIdeationService({ db, embedTexts, now = () => new Dat
     throw new Error("Cloud historical comparison exceeded its bounded input limit.");
   }
 
-  async function createCloudIdeationRun({ runId, ownerId, survivorPostIds }) {
+  async function createCloudIdeationRun({ runId, ownerId, survivorPostIds, mode = "shadow" }) {
     requireCloudRunArgs({ runId, ownerId });
+    if (!["shadow", "primary"].includes(mode)) throw new TypeError("The cloud ideation mode is unsupported.");
     const existing = await loadRun(runId, ownerId);
-    if (existing) return existing;
+    if (existing) {
+      if (existing.mode !== mode) throw new Error("The saved cloud mode cannot be changed.");
+      return existing;
+    }
     if (!Array.isArray(survivorPostIds) || survivorPostIds.length > PIPELINE.maxForYouInput ||
       new Set(survivorPostIds).size !== survivorPostIds.length || survivorPostIds.some((id) => typeof id !== "string" || !/^\d{1,32}$/.test(id))) {
       throw new TypeError("Cloud comparison requires at most thirty distinct source posts.");
     }
     const { data: sourceRun, error: sourceError } = await db.from("runs")
-      .select("id, settings_snapshot, window_end, started_at, created_at")
+      .select("id, status, settings_snapshot, window_end, started_at, created_at")
       .eq("id", runId).eq("owner_id", ownerId).maybeSingle();
     check(sourceError, "read its source run");
     if (!sourceRun) throw new Error("The source run does not belong to this owner.");
+    if (mode === "primary" && (sourceRun.settings_snapshot?.ideation_provider !== "chatgpt_cloud" || !["queued", "running"].includes(sourceRun.status))) {
+      throw new Error("Primary cloud ideation requires an active cloud-provider source run.");
+    }
     let posts = [];
     if (survivorPostIds.length) {
       const [snapshots, originals] = await Promise.all([
-        db.from("run_posts").select("post_id, selected_for_ai, filter_decision, filter_reason, commercial_element, hydrated_context, metrics")
+        db.from("run_posts").select("post_id, selected_for_ai, filter_decision, filter_reason, commercial_element, hydrated_context, metrics, signal_type, signal_summary, problem")
           .eq("run_id", runId).eq("owner_id", ownerId).in("post_id", survivorPostIds),
         db.from("posts").select("x_post_id, author_id, author_username, text, url, x_created_at, availability")
           .eq("owner_id", ownerId).in("x_post_id", survivorPostIds),
@@ -180,6 +219,7 @@ export function createCloudIdeationService({ db, embedTexts, now = () => new Dat
           commercial_element: snapshot.commercial_element || "none",
           context_summary: snapshot.hydrated_context?.context_summary || "",
           context: snapshot.hydrated_context || null,
+          signal_type: snapshot.signal_type || null, signal_summary: snapshot.signal_summary || "", problem: snapshot.problem || "",
         };
       });
     }
@@ -194,15 +234,17 @@ export function createCloudIdeationService({ db, embedTexts, now = () => new Dat
     }, 1024 * 1024);
     const automatic = posts.length <= PIPELINE.maxShortlistedPosts;
     const { error } = await db.from("cloud_ideation_runs").upsert({
-      id: runId, owner_id: ownerId, mode: "shadow", input,
-      status: posts.length ? "pending" : "no_ideas",
-      phase: posts.length ? (automatic ? "generating" : "shortlist") : "done",
+      id: runId, owner_id: ownerId, mode, input,
+      status: posts.length || mode === "primary" ? "pending" : "no_ideas",
+      phase: posts.length || mode === "primary" ? (automatic ? "generating" : "shortlist") : "done",
       shortlist_result: automatic ? automaticCloudShortlist(posts) : null,
-      result: posts.length ? null : emptyCloudReport("No posts survived the shared Luna stages."),
-      completed_at: posts.length ? null : timestamp(),
+      result: posts.length || mode === "primary" ? null : emptyCloudReport("No posts survived the shared Luna stages.", {}, mode),
+      completed_at: posts.length || mode === "primary" ? null : timestamp(),
     }, { onConflict: "id", ignoreDuplicates: true });
     check(error, "save its immutable input");
-    return loadRun(runId, ownerId);
+    const saved = await loadRun(runId, ownerId);
+    if (!saved || saved.mode !== mode) throw new Error("The saved cloud mode cannot be changed.");
+    return saved;
   }
 
   async function advanceShortlist(run, jobs) {
@@ -214,7 +256,9 @@ export function createCloudIdeationService({ db, embedTexts, now = () => new Dat
     if (checked.status !== "completed") return updateRun(run, { status: "running" });
     if (!checked.result.advanced_post_ids.length) {
       const saved = await updateRun(run, { shortlist_result: checked.result });
-      return finish(saved, emptyCloudReport("Cloud shortlisting advanced no posts."));
+      return finish(saved, emptyCloudReport("Cloud shortlisting advanced no posts.", {
+        counts: { shortlist_survivors: run.input.posts.length, shortlisted_posts: 0, shortlist_skipped: false },
+      }, run.mode));
     }
     return updateRun(run, { status: "running", phase: "generating", shortlist_result: checked.result });
   }
@@ -239,12 +283,13 @@ export function createCloudIdeationService({ db, embedTexts, now = () => new Dat
     const rejected = selectedJobs.filter((job) => job.status === "failed" || job.result?.status === "no_viable_idea")
       .map((job) => ({ stage: "generation", candidate_id: job.id, source_post_id: job.source_post_id, reason_codes: [job.status === "failed" ? "generation_failed" : "no_viable_idea"] }));
     const counts = {
+      shortlist_survivors: run.input.posts.length, shortlist_skipped: Boolean(run.shortlist_result?.automatic),
       shortlisted_posts: advancedIds.length, generation_candidates: generated.length,
       generation_no_viable: selectedJobs.filter((job) => job.result?.status === "no_viable_idea").length,
       generation_failed: selectedJobs.filter((job) => job.status === "failed").length,
     };
     if (!generated.length) {
-      const report = emptyCloudReport("No cloud-generated candidates remain.", { rejected, counts });
+      const report = emptyCloudReport("No cloud-generated candidates remain.", { rejected, counts }, run.mode);
       if (counts.generation_failed) {
         const saved = await updateRun(run, { result: report });
         return failCloudIdeationRun({ runId: saved.id, ownerId: saved.owner_id });
@@ -260,7 +305,7 @@ export function createCloudIdeationService({ db, embedTexts, now = () => new Dat
         counts: { ...counts, research_candidates: selection.accepted.length },
         usage: embeddingUsage(null, embeddingResult.usage),
         research_candidate_ids: selection.accepted.map((idea) => idea.candidate_id),
-      });
+      }, run.mode);
       // Persist expensive trusted selection before enqueueing, so recovery does
       // not regenerate embeddings or silently change the research input.
       run = await updateRun(run, { result: report }, { onlyEmptyResult: true });
@@ -321,10 +366,33 @@ export function createCloudIdeationService({ db, embedTexts, now = () => new Dat
     const ideas = selection.accepted.map((idea, index) => ({ ...resultWithoutEmbedding(idea), rank: index + 1 }));
     const report = emptyCloudReport("", {
       assessment: validated.assessment, ideas, sources: validated.sources, rejected,
-      counts: { ...(run.result?.counts || {}), candidates_validated: grounded.length, shadow_ideas: ideas.length },
+      counts: {
+        ...(run.result?.counts || {}), candidates_researched: payload.candidates.length,
+        candidates_validated: grounded.length, duplicates_removed: selection.rejected.length,
+        ...(run.mode === "shadow" ? { shadow_ideas: ideas.length } : { ideas_saved: ideas.length }),
+      },
       usage: embeddingUsage(run.result?.usage, embeddingResult.usage),
       research_candidate_ids: run.result?.research_candidate_ids || [],
-    });
+    }, run.mode);
+    if (run.mode === "primary") {
+      const rows = cloudPublicationRows({ accepted: selection.accepted, sources: validated.sources, payload, posts: run.input.posts });
+      // Hash the immutable worker response, not its locally normalized copy.
+      // The RPC atomically bridges the completed cloud job into the existing
+      // publisher and stamps actual idea IDs before making either run terminal.
+      const usage = cloudRunUsage(jobs.map((item) => item.id === checked.id ? checked : item), report.usage);
+      const { data, error } = await db.rpc("publish_primary_cloud_ideas", {
+        p_owner_id: run.owner_id, p_run_id: run.id, p_cloud_job_id: job.id,
+        p_payload_hash: hashResearchJson(payload), p_result_hash: hashResearchJson(job.result),
+        p_ideas: rows.ideas, p_x_sources: rows.xSources,
+        p_research_sources: rows.researchSources, p_idea_research_sources: rows.ideaResearchSources,
+        p_counts: report.counts, p_usage: usage, p_report: { ...report, usage },
+      });
+      check(error, "publish its primary ideas");
+      const saved = data?.[0];
+      if (!saved || !CLOUD_TERMINAL_STATUSES.has(saved.status)) throw new Error("The primary publication checkpoint is incomplete.");
+      await stopWaitingJobs(saved, "Cloud ideation has already finished.");
+      return saved;
+    }
     return finish(run, report);
   }
 
@@ -341,6 +409,9 @@ export function createCloudIdeationService({ db, embedTexts, now = () => new Dat
     }
     if (!Array.isArray(run.input?.posts) || run.input.source_run_id !== run.id) {
       throw new Error("The immutable cloud input is invalid.");
+    }
+    if (!run.input.posts.length) {
+      return finish(run, emptyCloudReport("No posts survived the shared Luna stages.", {}, run.mode));
     }
     const jobs = await loadJobs(run);
     if (run.phase === "shortlist") return advanceShortlist(run, jobs);

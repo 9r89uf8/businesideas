@@ -7,7 +7,7 @@ const stub = (names) => moduleUrl(names.map((name) =>
   `export async function ${name}(...args) { return globalThis.__cloudWorkflowTest.${name}(...args); }`,
 ).join("\n"));
 const modules = {
-  "daily-research-steps.js": stub(["fetchAndRank", "recordWorkflowFailure", "recordXForYouConnectionStatus"]),
+  "daily-research-steps.js": stub(["fetchAndRank", "readIdeationProvider", "recordWorkflowFailure", "recordXForYouConnectionStatus"]),
   "ideation-steps.js": stub(["filterCommercialPosts", "generateCandidateForPost", "hydrateNeededPostContext", "prepareCandidateResearchJob", "shortlistCommercialPosts"]),
   "openai-research-steps.js": stub(["cancelOpenAIResearchResponse", "claimPreparedResearchJob", "deleteOpenAIResearchResponse", "loadPreparedResearchJob", "persistOpenAIResearchResult", "pollOpenAIResearchResponse", "reportOpenAIResearchFailure", "startOpenAIResearchResponse"]),
   "research-finalizer-steps.js": stub(["finalizeResearchResult", "recordResearchFinalizerFailure"]),
@@ -31,6 +31,7 @@ const { cloudIdeation } = await import("../src/workflows/cloud-ideation.js");
 test("cloud dispatch failure leaves the full API generation, research and publication path working", async () => {
   const calls = [];
   globalThis.__cloudWorkflowTest = new Proxy({
+    readIdeationProvider: async () => "api",
     readXForYouCloudActivation: async () => ({ status: "disabled" }),
     fetchAndRank: async () => ["post-1"],
     filterCommercialPosts: async () => ({ survivorPostIds: ["post-1"], needsContextPostIds: [] }),
@@ -55,6 +56,40 @@ test("cloud dispatch failure leaves the full API generation, research and public
   assert.equal(result.status, "completed");
   assert.deepEqual(result.ideaIds, ["idea-1"]);
 });
+
+for (const dispatchFails of [false, true]) {
+  test(`primary cloud routing never calls Sol API stages${dispatchFails ? " when dispatch fails" : ""}`, async () => {
+    const calls = [];
+    globalThis.__cloudWorkflowTest = new Proxy({
+      readXForYouCloudActivation: async () => ({ status: "disabled" }),
+      fetchAndRank: async () => ["post-1"],
+      filterCommercialPosts: async () => ({ survivorPostIds: ["post-1"], needsContextPostIds: [] }),
+      hydrateNeededPostContext: async () => ["post-1"],
+      readIdeationProvider: async () => "chatgpt_cloud",
+      launchCloudComparison: async (args) => {
+        assert.equal(args.mode, "primary");
+        calls.push("cloud-dispatch");
+        if (dispatchFails) throw new Error("Unavailable");
+        return { status: "running" };
+      },
+      stopCloudComparison: async () => calls.push("cloud-stopped"),
+      recordWorkflowFailure: async () => calls.push("run-failed"),
+    }, {
+      get(target, property) {
+        return target[property] || (() => assert.fail(`Unexpected API step ${String(property)}`));
+      },
+    });
+    if (dispatchFails) {
+      await assert.rejects(dailyResearch({ runId: "run-1", ownerId: "owner-1" }), /API fallback is disabled/);
+      assert.deepEqual(calls, ["cloud-dispatch", "cloud-stopped", "run-failed"]);
+    } else {
+      assert.deepEqual(await dailyResearch({ runId: "run-1", ownerId: "owner-1" }), {
+        status: "running", provider: "chatgpt_cloud", cloudRunId: "run-1",
+      });
+      assert.deepEqual(calls, ["cloud-dispatch"]);
+    }
+  });
+}
 
 test("cloud coordinator waits for asynchronous submissions and returns its terminal comparison", async () => {
   const states = [{ status: "running", phase: "generating" }, { status: "running", phase: "researching" }, { status: "completed", phase: "done" }];

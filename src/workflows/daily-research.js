@@ -4,6 +4,7 @@ import { connectionObservationFromCloudResult } from "../lib/x/for-you-connectio
 import { launchCloudComparison, stopCloudComparison } from "./cloud-ideation-steps.js";
 import {
   fetchAndRank,
+  readIdeationProvider,
   recordWorkflowFailure,
   recordXForYouConnectionStatus,
 } from "./daily-research-steps.js";
@@ -242,7 +243,32 @@ export async function dailyResearch({ runId, ownerId }) {
   }
   if (!survivorPostIds.length) return { status: "no_ideas" };
 
-  // Compare an independent cloud ideation chain against the existing API
+  let ideationProvider;
+  try {
+    ideationProvider = await readIdeationProvider({ runId, ownerId });
+  } catch {
+    const message = "The ideation provider could not be loaded.";
+    await recordWorkflowFailure({ runId, ownerId, message });
+    throw new Error(message);
+  }
+  if (ideationProvider === "chatgpt_cloud") {
+    try {
+      const cloud = await launchCloudComparison({ runId, ownerId, survivorPostIds, mode: "primary" });
+      if (cloud.status === "failed") {
+        await recordWorkflowFailure({ runId, ownerId, message: "This cloud research attempt has already failed." });
+      }
+      return { status: cloud.status, provider: "chatgpt_cloud", cloudRunId: runId };
+    } catch {
+      try {
+        await stopCloudComparison({ runId, ownerId, message: "Cloud research dispatch failed." });
+      } finally {
+        await recordWorkflowFailure({ runId, ownerId, message: "Cloud research dispatch failed." });
+      }
+      throw new Error("Cloud research dispatch failed. Sol API fallback is disabled.");
+    }
+  }
+
+  // Explicit API rollback: compare an independent cloud chain against the API
   // pipeline. Its queue, decisions and validation never replace API checkpoints.
   try {
     await launchCloudComparison({ runId, ownerId, survivorPostIds });

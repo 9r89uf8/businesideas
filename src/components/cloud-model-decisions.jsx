@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { CandidateDecision, ShortlistDecision } from "@/components/model-decisions";
 import CloudComparisonTrigger from "@/components/cloud-comparison-trigger";
 
@@ -110,12 +111,15 @@ export default function CloudModelDecisions({ job, assessment, automatic = false
   );
 }
 
-function ResearchSummary({ result, validated = false }) {
+function ResearchSummary({ result, validated = false, primary = false }) {
   const report = record(result);
   if (!report) return <p className="mt-3 text-sm leading-6 text-[var(--ink-soft)]">No readable research summary was saved.</p>;
   const assessment = record(report.assessment);
   const ideas = records(report.ideas);
   const sources = records(report.sources);
+  const publishedIds = primary && validated && report.published === true && Array.isArray(report.idea_ids)
+    ? [...new Set(report.idea_ids.filter((id) => typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)))]
+    : [];
   return (
     <div className="mt-4 min-w-0 space-y-4">
       <dl className="space-y-3">
@@ -123,8 +127,20 @@ function ResearchSummary({ result, validated = false }) {
         <Field label="Research summary" value={assessment?.notes} />
       </dl>
       <p className="text-sm font-semibold">
-        {ideas.length} {ideas.length === 1 ? "idea" : "ideas"} {validated ? "passed comparison checks" : "submitted for checking"}
+        {ideas.length} {ideas.length === 1 ? "idea" : "ideas"} {validated ? primary ? "passed research checks" : "passed comparison checks" : "submitted for checking"}
       </p>
+      {publishedIds.length > 0 && (
+        <div className="flex flex-wrap gap-3">
+          {publishedIds.map((id, index) => (
+            <Link key={id} href={`/ideas/${id}`} className="focus-ring rounded text-sm font-bold text-[var(--moss)] underline underline-offset-2">
+              View published idea {index + 1} →
+            </Link>
+          ))}
+        </div>
+      )}
+      {primary && validated && ideas.length > 0 && report.published !== true && (
+        <p className="text-sm text-[var(--ink-soft)]">These validated ideas have not been published.</p>
+      )}
       {ideas.map((idea, index) => (
         <details key={index} className="min-w-0 rounded-xl border border-[var(--line)] bg-white/60">
           <summary className="focus-ring cursor-pointer break-words rounded-xl px-4 py-3 text-sm font-semibold">
@@ -172,16 +188,23 @@ function ResearchSummary({ result, validated = false }) {
   );
 }
 
-export function CloudComparison({ run, jobs = [], loadError = false, sourceRunId, canStart = false }) {
+export function CloudComparison({ run, jobs = [], loadError = false, sourceRunId, canStart = false, primary = false, sourceRunStatus }) {
   const cloudRun = record(run);
+  const isPrimary = cloudRun ? cloudRun.mode === "primary" : primary;
+  const title = isPrimary ? "ChatGPT cloud research" : "ChatGPT cloud comparison";
   if (!cloudRun) {
     return (
       <section className="panel mt-5 p-5">
-        <h2 className="eyebrow">ChatGPT cloud comparison</h2>
+        <h2 className="eyebrow">{title}</h2>
         <p className="mt-2 text-sm leading-6 text-[var(--ink-soft)]">
-          {loadError ? "Cloud comparison details are unavailable right now. Refresh to try again." : "No cloud comparison was recorded for this run."}
+          {loadError ? "Cloud details are unavailable right now. Refresh to try again."
+            : isPrimary
+              ? ["queued", "running"].includes(sourceRunStatus)
+                ? "Cloud research will begin after the posts finish filtering. Work is processed on an hourly schedule."
+                : "No saved cloud research is available for this run."
+              : "No cloud comparison was recorded for this run."}
         </p>
-        {!loadError && canStart && <CloudComparisonTrigger runId={sourceRunId} />}
+        {!isPrimary && !loadError && canStart && <CloudComparisonTrigger runId={sourceRunId} />}
       </section>
     );
   }
@@ -190,21 +213,26 @@ export function CloudComparison({ run, jobs = [], loadError = false, sourceRunId
   const researchJob = savedJobs.find((job) => job.kind === "research");
   const candidates = savedJobs.filter((job) => job.kind === "candidate");
   const final = ["completed", "no_ideas"].includes(cloudRun.status);
-  const finalResult = final && record(cloudRun.result)?.mode === "shadow" && cloudRun.result.published === false
+  const finalResult = final && record(cloudRun.result)?.mode === (isPrimary ? "primary" : "shadow") &&
+    (isPrimary || cloudRun.result.published === false)
     ? cloudRun.result : null;
-  const runLabel = cloudRun.status === "completed" ? "Comparison complete"
+  const runLabel = cloudRun.status === "completed" ? isPrimary ? "Research complete" : "Comparison complete"
     : cloudRun.status === "no_ideas" ? "No ideas passed validation"
-      : cloudRun.status === "failed" ? "Comparison stopped"
+      : cloudRun.status === "failed" ? isPrimary ? "Research stopped" : "Comparison stopped"
         : cloudRun.status === "pending" ? "Waiting to start"
           : PHASE_LABELS[cloudRun.phase] || "In progress";
   const shortlistComplete = Boolean(record(cloudRun.shortlist_result));
   return (
     <section className="panel mt-5 min-w-0 p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="eyebrow">ChatGPT cloud comparison</h2>
+        <h2 className="eyebrow">{title}</h2>
         <Badge success={final}>{runLabel}</Badge>
       </div>
-      <p className="mt-2 text-sm leading-6 text-[var(--ink-soft)]">Cloud results are saved for comparison. Published ideas continue to come from the API research.</p>
+      <p className="mt-2 text-sm leading-6 text-[var(--ink-soft)]">
+        {isPrimary
+          ? "Qualifying ideas from this research are saved to your reports after validation. Cloud work runs on an hourly schedule, so a full run can take several hours."
+          : "This run uses API research for publication. Its cloud results are saved separately for comparison."}
+      </p>
       <div className="mt-4 grid gap-3 md:grid-cols-3">
         <div className="min-w-0 rounded-xl bg-[var(--ink)]/[0.035] p-3">
           <h3 className="text-xs font-bold">Shortlist</h3>
@@ -228,12 +256,12 @@ export function CloudComparison({ run, jobs = [], loadError = false, sourceRunId
           <RequestedModel job={researchJob} />
         </div>
       </div>
-      {cloudRun.status === "failed" && <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-[#88483f]">{text(cloudRun.error_message) || "The comparison stopped before it could finish."}</p>}
+      {cloudRun.status === "failed" && <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-[#88483f]">{text(cloudRun.error_message) || "The cloud work stopped before it could finish."}</p>}
       {loadError && <p className="mt-3 text-sm leading-6 text-[var(--ink-soft)]">Some cloud responses could not be loaded. Refresh to try again.</p>}
       {finalResult ? (
         <details className="mt-4 min-w-0 rounded-xl border border-[var(--line)]">
-          <summary className="focus-ring cursor-pointer rounded-xl px-4 py-3 text-sm font-semibold">Cloud research summary and comparison ideas</summary>
-          <div className="border-t border-[var(--line)] p-4"><ResearchSummary result={finalResult} validated /></div>
+          <summary className="focus-ring cursor-pointer rounded-xl px-4 py-3 text-sm font-semibold">{isPrimary ? "Cloud research summary and ideas" : "Cloud research summary and comparison ideas"}</summary>
+          <div className="border-t border-[var(--line)] p-4"><ResearchSummary result={finalResult} validated primary={isPrimary} /></div>
         </details>
       ) : researchJob?.status === "submitted" ? (
         <details className="mt-4 min-w-0 rounded-xl border border-[var(--amber)]/35">
@@ -242,7 +270,7 @@ export function CloudComparison({ run, jobs = [], loadError = false, sourceRunId
         </details>
       ) : null}
       {shortlistJob?.status === "submitted" && <p className="mt-3 text-sm leading-6 text-[var(--ink-soft)]">The cloud shortlist was submitted and is waiting for validation. Post decisions will appear after these checks.</p>}
-      <a href={`/posts?run=${encodeURIComponent(sourceRunId || cloudRun.id)}`} className="focus-ring mt-4 inline-block rounded text-xs font-bold text-[var(--moss)] hover:underline">Refresh comparison</a>
+      <Link href={`/posts?run=${encodeURIComponent(sourceRunId || cloudRun.id)}`} className="focus-ring mt-4 inline-block rounded text-xs font-bold text-[var(--moss)] hover:underline">{isPrimary ? "Refresh research" : "Refresh comparison"}</Link>
     </section>
   );
 }

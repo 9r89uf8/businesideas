@@ -165,6 +165,22 @@ export function ShortlistDecision({ assessment, automatic = false }) {
   );
 }
 
+export function LinkedContextDecision({ context }) {
+  const savedContext = record(context);
+  if (!savedContext) return null;
+  return (
+    <section className="min-w-0 border-t border-[var(--line)] pt-4">
+      <h3 className="eyebrow">Luna · Linked context</h3>
+      <dl className="mt-3 space-y-3">
+        <Field label="Outcome" value={humanize(savedContext.status)} />
+        <Field label="Context summary" value={savedContext.context_summary} />
+        <Field label="Reason" value={savedContext.reason} />
+        <Field label="Commercial element" value={humanize(savedContext.commercial_element)} />
+      </dl>
+    </section>
+  );
+}
+
 export default function ModelDecisions({
   snapshot,
   candidateResult = null,
@@ -234,17 +250,7 @@ export default function ModelDecisions({
           <ShortlistDecision assessment={shortlist} automatic={automaticShortlist} />
         </section>
 
-        {context && (
-          <section className="min-w-0 border-t border-[var(--line)] pt-4">
-            <h3 className="eyebrow">Luna · Linked context</h3>
-            <dl className="mt-3 space-y-3">
-              <Field label="Outcome" value={humanize(context.status)} />
-              <Field label="Context summary" value={context.context_summary} />
-              <Field label="Reason" value={context.reason} />
-              <Field label="Commercial element" value={humanize(context.commercial_element)} />
-            </dl>
-          </section>
-        )}
+        <LinkedContextDecision context={context} />
 
         {(text(post.filter_decision) || text(post.filter_reason)) && (
           <section className="min-w-0 border-t border-[var(--line)] pt-4">

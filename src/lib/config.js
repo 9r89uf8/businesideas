@@ -109,6 +109,8 @@ export const POST_QUALITY = Object.freeze({
 });
 
 export const PIPELINE = {
+  // New runs use the scheduled cloud worker. Set to "api" for an explicit rollback.
+  ideationProvider: "chatgpt_cloud",
   models: {
     extraction: "gpt-5.6-luna",
     context: "gpt-5.6-luna",

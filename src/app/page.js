@@ -171,7 +171,7 @@ export default async function DashboardPage() {
   const metrics = [
     { label: "Candidates", value: countValue(counts, ["after_filtering", "x_returned"]) },
     { label: "Signals", value: countValue(counts, ["relevant_signals"]) },
-    { label: "Clusters", value: countValue(counts, ["clusters_created", "eligible_clusters"]) },
+    { label: "Generated ideas", value: countValue(counts, ["generation_candidates", "clusters_created", "eligible_clusters"]) },
     { label: "Ideas", value: countValue(counts, ["ideas_saved"]) },
   ];
 

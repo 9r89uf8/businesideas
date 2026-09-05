@@ -72,7 +72,7 @@ function harness(options = {}) {
       from(table) { assert.equal(table, "cloud_ideation_runs"); return new Query(); },
     },
     async create(args) {
-      assert.deepEqual(args, ARGS);
+      assert.deepEqual(args, { ...ARGS, mode: options.mode || "shadow" });
       calls.push("create");
       created = true;
       return { ...state };
@@ -107,6 +107,13 @@ test("cloud startup retries twice and records only its acknowledged workflow", a
   assert.equal(result.dispatch_recorded, true);
   assert.equal(fixture.state.status, "running");
   assert.equal(fixture.failures.length, 0);
+});
+
+test("primary dispatch preserves the explicit mode at creation", async () => {
+  const fixture = harness({ mode: "primary" });
+  const result = await startCloudComparison({ ...ARGS, mode: "primary" });
+  assert.equal(result.workflow_run_id, "workflow-1");
+  assert.equal(fixture.startAttempts, 1);
 });
 
 test("three failed startup attempts close the comparison and preserve the startup error", async () => {

@@ -4,7 +4,7 @@ export const RUN_STAGE_LABELS = {
   shortlisting: "Selecting the strongest source posts",
   clustering: "Building opportunity clusters",
   generating: "Generating independent candidates",
-  research_queued: "Waiting for API research",
+  research_queued: "Waiting for research to start",
   researching: "Validating the strongest candidates with live web sources",
   validating: "Validating research and candidate evidence",
   saving: "Deduplicating and saving ideas",
