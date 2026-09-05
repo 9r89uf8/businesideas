@@ -1,5 +1,6 @@
 import Link from "next/link";
 import ModelDecisions from "@/components/model-decisions";
+import CloudModelDecisions, { CloudComparison } from "@/components/cloud-model-decisions";
 import { requireOwner } from "@/lib/auth";
 import { POST_QUALITY } from "@/lib/config";
 
@@ -7,7 +8,7 @@ export const metadata = { title: "Source feed" };
 export const dynamic = "force-dynamic";
 
 const SOURCE_FILTERS = new Set(["all", "followed", "topic", "for_you"]);
-const VIEW_FILTERS = new Set(["all", "selected", "signals", "shortlisted"]);
+const VIEW_FILTERS = new Set(["all", "selected", "signals", "shortlisted", "cloud_shortlisted"]);
 const VIEW_FLOOR_RANKING_VERSIONS = new Set(["views_v3", POST_QUALITY.version]);
 
 function clean(value, maximum = 100) {
@@ -53,7 +54,7 @@ function sourceBadgeClass(channel) {
   return "bg-[var(--ink)]/7 text-[var(--ink-soft)]";
 }
 
-function PostCard({ snapshot, rankingVersion, minimumViews, run, decisionsError }) {
+function PostCard({ snapshot, rankingVersion, minimumViews, run, decisionsError, cloudRun, cloudError }) {
   const post = snapshot.post;
   const metrics = snapshot.metrics || {};
   const qualityMetrics = [
@@ -100,7 +101,12 @@ function PostCard({ snapshot, rankingVersion, minimumViews, run, decisionsError 
         )}
         {snapshot.shortlisted && (
           <span className="rounded-full bg-[var(--moss)]/10 px-2.5 py-1 text-[0.68rem] font-bold text-[var(--moss)]">
-            Shortlisted
+            API shortlisted
+          </span>
+        )}
+        {snapshot.cloud_shortlisted && (
+          <span className="rounded-full bg-[var(--amber)]/20 px-2.5 py-1 text-[0.68rem] font-bold text-[#77521d]">
+            Cloud shortlisted
           </span>
         )}
         {snapshot.filter_decision === "needs_context" && (
@@ -193,6 +199,14 @@ function PostCard({ snapshot, rankingVersion, minimumViews, run, decisionsError 
           />
         )}
 
+        <CloudModelDecisions
+          job={snapshot.cloud_candidate_job}
+          assessment={snapshot.cloud_shortlist_assessment}
+          automatic={cloudRun?.shortlist_result?.automatic === true}
+          cloudRun={cloudRun}
+          loadError={cloudError}
+        />
+
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-3 text-[0.68rem] text-[var(--ink-soft)]">
           <span>{snapshot.source_channel === "for_you" ? "Feed" : "Search"} position {snapshot.search_position ?? "—"}</span>
           <span>{usesVersionedViewFloor ? `${viewFloor}-qualified score` : usesViewFirstRanking ? "View-first score" : "Legacy score"} {Number.isFinite(snapshot.deterministic_score) ? snapshot.deterministic_score.toFixed(2) : "—"}</span>
@@ -223,25 +237,47 @@ export default async function PostsPage({ searchParams }) {
   let snapshots = [];
   let pageError = runsError;
   let decisionsError = false;
+  let cloudRun = null;
+  let cloudJobs = [];
+  let cloudError = false;
+  let canStartCloud = false;
 
   if (selectedRun && !pageError) {
-    let snapshotQuery = supabase
+    const snapshotQuery = supabase
       .from("run_posts")
       .select("post_id, search_position, metrics, deterministic_score, selected_for_ai, source_channel, relevant, signal_type, target_customer, signal_summary, filter_decision, filter_reason, commercial_element, hydrated_context, shortlist_assessment")
       .eq("owner_id", ownerId)
       .eq("run_id", selectedRun.id);
 
-    if (source !== "all") snapshotQuery = snapshotQuery.eq("source_channel", source);
-    if (view === "selected") snapshotQuery = snapshotQuery.eq("selected_for_ai", true);
-    if (view === "signals") snapshotQuery = snapshotQuery.eq("relevant", true);
+    const [snapshotResult, cloudRunResult, cloudJobsResult] = await Promise.allSettled([
+      snapshotQuery
+        .order("deterministic_score", { ascending: false, nullsFirst: false })
+        .order("search_position", { ascending: true })
+        .limit(500),
+      supabase
+        .from("cloud_ideation_runs")
+        .select("id, status, phase, shortlist_result, result, error_message")
+        .eq("owner_id", ownerId)
+        .eq("id", selectedRun.id)
+        .eq("mode", "shadow")
+        .maybeSingle(),
+      supabase
+        .from("cloud_model_jobs")
+        .select("kind, source_post_id, result, status, requested_model, requested_reasoning, error_message")
+        .eq("owner_id", ownerId)
+        .eq("cloud_run_id", selectedRun.id)
+        .order("created_at", { ascending: true })
+        .limit(40),
+    ]);
 
-    const snapshotResult = await snapshotQuery
-      .order("deterministic_score", { ascending: false, nullsFirst: false })
-      .order("search_position", { ascending: true })
-      .limit(500);
-
-    pageError = snapshotResult.error;
-    snapshots = snapshotResult.data || [];
+    pageError = snapshotResult.status === "fulfilled" ? snapshotResult.value.error : true;
+    snapshots = snapshotResult.status === "fulfilled" ? snapshotResult.value.data || [] : [];
+    cloudError = cloudRunResult.status === "rejected" || Boolean(cloudRunResult.value.error) ||
+      cloudJobsResult.status === "rejected" || Boolean(cloudJobsResult.value.error);
+    cloudRun = cloudRunResult.status === "fulfilled" && !cloudRunResult.value.error
+      ? cloudRunResult.value.data : null;
+    cloudJobs = cloudRun && cloudJobsResult.status === "fulfilled" && !cloudJobsResult.value.error
+      ? cloudJobsResult.value.data || [] : [];
 
     if (snapshots.length && !pageError) {
       const postIds = snapshots.map((snapshot) => snapshot.post_id);
@@ -272,6 +308,14 @@ export default async function PostsPage({ searchParams }) {
       const decisionsByPostId = new Map(
         decisions.map((decision) => [decision.source_post_id, decision]),
       );
+      const cloudAssessments = Array.isArray(cloudRun?.shortlist_result?.assessments)
+        ? cloudRun.shortlist_result.assessments.filter((item) => item && typeof item.post_id === "string")
+        : [];
+      const cloudAssessmentsByPostId = new Map(cloudAssessments.map((item) => [item.post_id, item]));
+      const cloudJobsByPostId = new Map(
+        cloudJobs.filter((job) => job.kind === "candidate" && typeof job.source_post_id === "string")
+          .map((job) => [job.source_post_id, job]),
+      );
       snapshots = snapshots.map((snapshot) => ({
         ...snapshot,
         post: postsById.get(snapshot.post_id) || null,
@@ -279,9 +323,24 @@ export default async function PostsPage({ searchParams }) {
           snapshot.shortlist_assessment?.advanced === true ||
           snapshot.shortlist_assessment?.decision === "advance",
         candidate_result: decisionsByPostId.get(snapshot.post_id)?.candidate_result || null,
+        cloud_shortlist_assessment: cloudAssessmentsByPostId.get(snapshot.post_id) || null,
+        cloud_candidate_job: cloudJobsByPostId.get(snapshot.post_id) || null,
+        cloud_shortlisted: cloudJobsByPostId.has(snapshot.post_id) ||
+          cloudAssessmentsByPostId.get(snapshot.post_id)?.advanced === true ||
+          cloudAssessmentsByPostId.get(snapshot.post_id)?.decision === "advance",
       }));
+      canStartCloud = snapshots.some((snapshot) => snapshot.selected_for_ai && snapshot.post?.text && (
+        snapshot.filter_decision === "keep" ||
+        (snapshot.filter_decision === "needs_context" && snapshot.hydrated_context?.status === "resolved")
+      ));
+      if (source !== "all") snapshots = snapshots.filter((snapshot) => snapshot.source_channel === source);
+      if (view === "selected") snapshots = snapshots.filter((snapshot) => snapshot.selected_for_ai === true);
+      if (view === "signals") snapshots = snapshots.filter((snapshot) => snapshot.relevant === true);
       if (view === "shortlisted") {
         snapshots = snapshots.filter((snapshot) => snapshot.shortlisted);
+      }
+      if (view === "cloud_shortlisted") {
+        snapshots = snapshots.filter((snapshot) => snapshot.cloud_shortlisted);
       }
     }
   }
@@ -340,7 +399,8 @@ export default async function PostsPage({ searchParams }) {
             <option value="all">All retrieved (includes rejected)</option>
             <option value="selected">Sent to post filter</option>
             <option value="signals">Filter survivors</option>
-            <option value="shortlisted">Shortlisted posts</option>
+            <option value="shortlisted">API shortlisted posts</option>
+            <option value="cloud_shortlisted">Cloud shortlisted posts</option>
           </select>
         </label>
         <button className="focus-ring self-end rounded-xl bg-[var(--ink)] px-4 py-2.5 text-sm font-bold text-white">Filter</button>
@@ -375,6 +435,16 @@ export default async function PostsPage({ searchParams }) {
         </section>
       )}
 
+      {selectedRun && (
+        <CloudComparison
+          run={cloudRun}
+          jobs={cloudJobs}
+          loadError={cloudError}
+          sourceRunId={selectedRun.id}
+          canStart={canStartCloud}
+        />
+      )}
+
       <div className="mt-6 flex items-center justify-between gap-4 text-xs text-[var(--ink-soft)]">
         <p>{snapshots.length} {snapshots.length === 1 ? "post" : "posts"} in this view</p>
         {(source !== "all" || view !== "all" || requestedRun) && <Link href="/posts" className="focus-ring rounded-md font-bold text-[var(--moss)] hover:underline">Clear filters</Link>}
@@ -394,6 +464,8 @@ export default async function PostsPage({ searchParams }) {
               minimumViews={minimumViews}
               run={selectedRun}
               decisionsError={decisionsError}
+              cloudRun={cloudRun}
+              cloudError={cloudError}
             />
           ))}
         </section>

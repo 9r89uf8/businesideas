@@ -11,15 +11,18 @@ hydrates only ambiguous linked context, shortlists at most eight posts, creates
 one independently generated candidate per shortlisted post, and researches at
 most three deduplicated candidates before publishing zero to three ideas.
 
-Luna, Sol, and embeddings are OpenAI Platform calls made with server-only
-credentials. Luna performs the cheap commercial filter and bounded context
+In the authoritative API path, Luna, Sol, and embeddings are OpenAI Platform
+calls made with server-only credentials. Luna performs the cheap commercial filter and bounded context
 hydration. Sol performs shortlisting, isolated candidate generation, and final
 web research with strict structured output.
 
-There is one production path: the daily Vercel Workflow continues through
-research and publication. The repository retains a narrow MCP interface and
-Codex skill as an optional manual or future worker path, not as production
-scheduling infrastructure.
+There is one publication path: the daily Vercel Workflow continues through API
+research and publication. An additive ChatGPT cloud comparison branches after
+the shared Luna stages, with its own shortlist, candidate jobs, research and
+stored results. It cannot publish or replace API checkpoints. Its recurring
+cloud Work schedule still requires live verification (sections 22 and 30).
+The repository also retains the separate narrow Signal Foundry MCP interface
+and Codex skill as an optional manual or future research worker path.
 
 The Playwright collector contributes only ordered X post IDs and feed
 positions. The daily Vercel Workflow invokes one stopped EC2 worker only when
@@ -167,7 +170,7 @@ but it is not invoked by the daily production flow.
 
 ### Important absences
 
-The current system does not use:
+The API publication path does not use:
 
 - TypeScript;
 - an ORM;
@@ -338,6 +341,9 @@ Supabase Postgres is the source of truth for:
 - published ideas and their evidence;
 - owner feedback.
 
+Separate cloud comparison tables retain their own immutable model inputs,
+submitted responses, validation state and comparison reports (section 30).
+
 Machine-checkable state changes are implemented as narrow Postgres functions.
 Mutating research functions are executable only by the service role. The owner
 has RLS-protected read access to research tables.
@@ -374,6 +380,15 @@ POST /api/runs
 
 Manual runs use a random run key. The database still permits only one queued or
 running run for the owner at a time.
+
+### Cloud comparison for an existing run
+
+`POST /api/runs/[id]/cloud-comparison` requires the signed-in owner and verifies
+the source run belongs to that owner. It starts or recovers only that run's
+cloud comparison from retained, selected posts that Luna kept or resolved.
+It returns `202` with comparison state, or `409` when no posts survived. It does
+not restart X collection, Luna or the API run. The Source feed exposes this
+action when eligible retained posts exist and no comparison has been recorded.
 
 ### API research continuation
 
@@ -1215,6 +1230,26 @@ Important fields include:
 
 Payloads and results are each limited to one MiB. Attempts are limited to three.
 
+### `cloud_ideation_runs` and `cloud_model_jobs`
+
+`cloud_ideation_runs.id` is the source API run ID, linked through an owner-aware
+foreign key. Each row has fixed `mode = 'shadow'`, immutable input and deadline,
+its own status/phase, shortlist result, trusted selection/report checkpoint,
+coordinator Workflow ID and lifecycle timestamps.
+
+`cloud_model_jobs` holds independently claimed `shortlist`, `candidate` and
+`research` work, with a unique `(cloud_run_id, job_key)`. It retains the source
+post ID for candidate work, immutable payload/requested model settings, claim
+capability and lease, attempt count, submitted model result, worker-reported
+runtime metadata, errors and timestamps. The model result becomes immutable
+once submitted; `submitted` is awaiting application validation and `completed`
+means the response passed its contract. The coordinator alone advances phases
+and applies the later research/evidence gates. Inputs are at most one MiB;
+individual model results are at most 256 KiB. These tables have owner browser
+SELECT policies and service-role mutations; ordinary authenticated sessions
+cannot call the queue's mutation RPCs. See section 30 for the administrative
+Supabase plugin boundary.
+
 ### `ideas`
 
 Published hypotheses with rank, product explanation, product contract, hard
@@ -1411,12 +1446,23 @@ saved Sol candidate or no-viable-idea result, decision reason, three concepts
 and critiques, and selected idea details. It also shows the shortlist
 assessment and available Luna context/filter decisions. Automatic shortlist
 advancement is labeled explicitly without presenting its placeholder score
-as a model assessment. A Shortlisted posts filter limits the feed to these
+as a model assessment. An API shortlisted posts filter limits the feed to these
 posts. Candidate results are read by owner, run, and source post through the
 owner's RLS-protected Supabase client; a candidate-query failure leaves the
 source feed available and marks the panel unavailable. Missing results are
 shown as pending only while the run can still generate them, otherwise as no
 saved response. The panel does not infer research or publication decisions.
+
+The cloud comparison panel shows separate run and job progress, requested model
+and reasoning, and an explicitly unverified actual model. Cloud shortlist
+assessments and independent generation appear beside the API panels, including
+posts selected only by cloud and posts cloud held or rejected. The Cloud
+shortlisted posts filter uses that independent selection. Submitted responses
+are labeled as awaiting validation; final comparison reports expose the
+research summary, ideas that passed checks and worker-reported source links.
+These are comparison results, not published ideas. Owner/run-scoped queries
+select explicit display fields and do not load model payloads or runtime
+metadata into the page. Eligible older runs offer Run cloud comparison.
 
 ### `/ideas`
 
@@ -1515,6 +1561,8 @@ Apply every file in `supabase/migrations` in filename order, including:
 004_account_first_x_collection.sql
 005_for_you_source_channel.sql
 006_post_first_ideation.sql
+20260904235628_cloud_ideation_shadow_queue.sql
+20260905001502_cloud_ideation_hourly_deadline.sql
 ```
 
 Together these create the queue, external evidence tables, research RPCs, stage
@@ -1523,6 +1571,11 @@ candidates; allow 50 preferred usernames; and permit the additive `for_you`
 source channel. Migration 006 adds official source context, post-first filter,
 context and shortlist checkpoints, isolated candidate results, and the v2
 candidate research envelope while preserving legacy rows.
+The timestamped cloud migration adds the isolated comparison tables, leased
+worker RPCs, immutable input/result triggers, owner browser read policies and
+terminal-input retention function.
+The hourly-deadline migration gives new comparisons a 24-hour window without
+changing deadlines already saved on existing comparisons.
 
 ### 2. Configure server-only production values
 
@@ -1539,7 +1592,9 @@ Deploy the application and confirm `vercel.json` contains only:
 GET /api/cron/daily at 13:00 UTC
 ```
 
-No research polling cron or ChatGPT/Codex scheduled task is part of production.
+No research polling cron or ChatGPT/Codex scheduled task is required for API
+publication. The comparison worker has separate operator setup below; it does
+not alter this Vercel cron.
 
 ### 4. Perform one production end-to-end check
 
@@ -1554,6 +1609,31 @@ No research polling cron or ChatGPT/Codex scheduled task is part of production.
 5. Confirm `runs.usage.research` contains bounded token and web-search counts
    plus the response ID, without secrets or payload content.
 6. If ideas publish, verify both X and external evidence on an idea page.
+
+### Cloud comparison worker setup and verification status
+
+Apply the cloud migration and deploy the coordinator, queue integration and
+owner route. Configure a standalone **ChatGPT Work cloud schedule** with the
+complete [`worker-prompt.md`](./integrations/chatgpt-cloud-ideation/worker-prompt.md),
+the installed Supabase plugin, GPT-5.6 Sol High requested, and an hourly
+interval. Each scheduled execution must start a fresh chat, claim at most one
+job and stop after that job; it uses no local project or local files.
+Eligible paid ChatGPT schedules support recurrence up to once per hour; the
+five-minute configuration was not created. See the
+[official task frequency limits](https://help.openai.com/en/articles/10291617-tasks-in-chatgpt).
+A complete batch can require ten separate hourly executions: one shortlist,
+up to eight candidate jobs and one research job. The coordinator's 24-hour
+deadline allows for scheduling delay and some retries.
+
+The recurring schedule configuration and the complete shortlist-to-research
+comparison are **pending live verification**. The one-time plugin test recorded
+below is narrower evidence and does not establish that this new schedule is
+active. Verify an eligible retained run through Run cloud comparison, then
+confirm separate shortlist/candidate/research responses, trusted final checks,
+comparison-only storage and unchanged API publication. The instructions and
+connection requirements are in the
+[`cloud integration README`](./integrations/chatgpt-cloud-ideation/README.md).
+API provider cutover remains a separate change after reviewing those results.
 
 ### Optional MCP setup and current status
 
@@ -1578,11 +1658,28 @@ and a controlled local Codex run claimed a job, submitted a result, and reached
 `research_jobs.status = completed` and `runs.status = no_ideas`. That check used
 retained legacy evidence only, and its synthetic rows were removed afterward.
 
-An attempted unattended task on the current personal Pro account did not expose
-the private skill or MCP tools. Its nonfunctional hourly heartbeat was deleted.
-This limitation no longer blocks production because the API-backed daily
-Workflow does not depend on that task. The MCP path can still be used manually
-or reconsidered for an account that supports unattended private write tools.
+An earlier unattended task on the personal Pro account did not expose the
+private skill or MCP tools. Its nonfunctional hourly heartbeat was deleted.
+That observation concerns the private Signal Foundry MCP path; production
+continues to use the API-backed daily Workflow.
+
+On September 4, 2026, a one-time cloud ChatGPT Work schedule using the installed
+Supabase plugin completed without an approval prompt. An independent database
+read confirmed a saved `candidate` decision and three-sentence rationale at
+`2026-09-04T23:31:10.729213Z`, with the correct nonce read from the fixture and
+absent from the scheduled prompt. The fixture was a terminal `runs` row that
+never entered the research queue; the test created zero research jobs and zero
+ideas. This verifies scheduled database reading, model evaluation, and writing
+through the installed Supabase plugin. The custom Signal Foundry MCP tools were
+absent and remain unverified in this cloud scheduling path.
+The disposable fixture was deleted afterward, and a separate query confirmed
+zero remaining test runs, jobs, or ideas. The one-time schedule is completed
+with no recurrence; its history remains available for review.
+
+The evidence is in [the Work test chat](https://chatgpt.com/c/6a9b52db-7c70-83e8-8bf0-b5aa32a51964),
+schedule ID `6a9b53a3e2ec819195b642f0f3c8d347`. The initiating Work UI selected
+GPT-5.6 Sol Medium and the saved prompt requested it, but the scheduled runtime
+returned no independent model metadata, so its exact model was not verified.
 
 ### Optional For You setup
 
@@ -1918,8 +2015,9 @@ seven-day validation plan identify what still needs real-world testing.
 
 ## 26. Known boundaries
 
-- One daily or manual Workflow carries one run through API research; there is no
-  independent queue worker or watchdog cron.
+- One daily or manual Workflow carries one run through API research; its queue
+  needs no independent worker or watchdog cron. The additive cloud comparison
+  has a separate coordinator and scheduled worker (section 30).
 - Each database claim makes one non-retried response-creation POST. OpenAI does
   not document creation idempotency, and a job can consume up to three
   potentially billable claim attempts after bounded failures.
@@ -1967,6 +2065,13 @@ These are current operating boundaries, not alternate execution paths.
 - [`src/workflows/research-finalizer-steps.js`](./src/workflows/research-finalizer-steps.js)
 - [`src/lib/research/job-service.js`](./src/lib/research/job-service.js)
 - [`src/lib/runs/start-run.js`](./src/lib/runs/start-run.js)
+- [`src/workflows/cloud-ideation.js`](./src/workflows/cloud-ideation.js)
+- [`src/workflows/cloud-ideation-steps.js`](./src/workflows/cloud-ideation-steps.js)
+- [`src/lib/cloud-ideation/dispatch.js`](./src/lib/cloud-ideation/dispatch.js)
+- [`src/lib/cloud-ideation/engine.js`](./src/lib/cloud-ideation/engine.js)
+- [`src/lib/cloud-ideation/contracts.js`](./src/lib/cloud-ideation/contracts.js)
+- [`integrations/chatgpt-cloud-ideation/README.md`](./integrations/chatgpt-cloud-ideation/README.md)
+- [`integrations/chatgpt-cloud-ideation/worker-prompt.md`](./integrations/chatgpt-cloud-ideation/worker-prompt.md)
 - [`vercel.json`](./vercel.json)
 
 ### X and ranking
@@ -2051,7 +2156,11 @@ These are current operating boundaries, not alternate execution paths.
 - [`supabase/migrations/004_account_first_x_collection.sql`](./supabase/migrations/004_account_first_x_collection.sql)
 - [`supabase/migrations/005_for_you_source_channel.sql`](./supabase/migrations/005_for_you_source_channel.sql)
 - [`supabase/migrations/006_post_first_ideation.sql`](./supabase/migrations/006_post_first_ideation.sql)
+- [`supabase/migrations/20260904235628_cloud_ideation_shadow_queue.sql`](./supabase/migrations/20260904235628_cloud_ideation_shadow_queue.sql)
+- [`supabase/migrations/20260905001502_cloud_ideation_hourly_deadline.sql`](./supabase/migrations/20260905001502_cloud_ideation_hourly_deadline.sql)
 - [`src/app/posts/page.js`](./src/app/posts/page.js)
+- [`src/app/api/runs/[id]/cloud-comparison/route.js`](./src/app/api/runs/[id]/cloud-comparison/route.js)
+- [`src/components/cloud-model-decisions.jsx`](./src/components/cloud-model-decisions.jsx)
 - [`src/app/ideas/[id]/page.js`](./src/app/ideas/[id]/page.js)
 - [`src/components/idea-detail.jsx`](./src/components/idea-detail.jsx)
 - [`src/components/external-research-list.jsx`](./src/components/external-research-list.jsx)
@@ -2116,3 +2225,87 @@ AWS infrastructure is owned by the `signal-foundry-x-for-you` and
 is stored only under the private, versioned S3 `deployment/` prefix; results do
 not use S3. Human approval expiry is an operator/renewal concern and does not
 add another runtime flag or service.
+
+## 30. ChatGPT cloud ideation comparison
+
+This implemented branch is always `shadow`: its decisions and final report are
+stored separately, and the API path remains authoritative for publication. It
+shares the retained X posts, Luna commercial filtering and resolved linked
+context, then makes an independent commercial selection:
+
+```text
+Shared Luna survivors and resolved context
+  -> independent cloud shortlist (at most 8; automatic when 8 or fewer survive)
+  -> one cloud candidate job per post, each in a fresh scheduled chat
+  -> trusted schema/source validation, score ordering and duplicate checks
+  -> immutable top-3 research payload
+  -> one cloud research job with public-web sources
+  -> trusted evidence/product validation and final duplicate checks
+  -> cloud comparison report only; zero to three ideas, published = false
+```
+
+The payloads reuse the existing shortlist, candidate-generation and research
+prompts and schemas. A candidate job receives exactly one source post, its
+resolved context and saved product preferences; the worker must consider three
+concepts and return a candidate or `no_viable_idea`. The requested settings are
+Sol Medium for shortlisting and Sol High for generation/research. Cloud Work
+schedule/model requests and worker-reported metadata do not establish the
+actual model or reasoning used; runtime identity remains unverified. Source
+access is worker-reported rather than attested by an API response trace. Luna
+and embedding calls remain OpenAI Platform calls.
+
+After validating generation results, the Vercel coordinator sorts by selected
+idea score and applies the existing exact/semantic duplicate rules before
+admitting at most three candidates. Historical comparisons use only the
+owner's ideas created before the source API run's saved `started_at` (or
+`created_at` fallback), and explicitly exclude ideas from that API run. This
+prevents the concurrent API result from being treated as prior historical
+evidence against its cloud comparison. Trusted selection is saved before
+research is queued. The final research stage checks candidate/source membership,
+evidence grounding and the product contract, then deduplicates again against
+the same historical cutoff and within the final batch. The report retains
+assessments, ideas, source records, rejected candidate reason codes, counts,
+embedding usage and the unverified-runtime/worker-reported-source qualifiers.
+It never writes API shortlist/candidate checkpoints, `research_jobs`, published
+`ideas` or their source-link tables.
+
+### Coordination, claims and access
+
+The daily Workflow attempts cloud dispatch after Luna survivors are resolved
+and before API shortlisting. Dispatch errors are caught so the API path
+continues. It does not wait for cloud model work. The separate `cloudIdeation`
+Workflow advances saved state, sleeps durably for one minute between checks
+and enforces the run's saved deadline, with at most 1,440 polling iterations.
+New comparisons receive a 24-hour deadline; earlier immutable deadlines remain
+unchanged.
+Unique job keys, immutable inputs and conditional checkpoint updates make
+dispatch/processing retries recoverable without replacing accepted model output.
+
+The worker uses the installed administrative Supabase plugin's `execute_sql`
+tool. Its saved prompt permits only these three invoker RPCs:
+
+- `claim_cloud_model_job`: atomically claim one available owner-scoped job;
+- `submit_cloud_model_job`: save the result under its exact job/claim capability;
+- `report_cloud_model_failure`: release or fail the current claim.
+
+Claims last at most 30 minutes, are capped by the run deadline, and allow at
+most three attempts. The queue rejects mismatched owner/job pairs, stale/replaced claims and
+changed resubmissions; an identical accepted submission is idempotent.
+Submitted JSON remains immutable while the coordinator marks valid contracts
+completed or invalid contracts failed. The worker cannot mark a response as
+validated through these RPCs.
+
+Authenticated owner browser sessions have RLS-protected SELECT access only;
+mutation RPC execution is revoked from public/anonymous/authenticated roles
+and granted to `service_role`. The installed plugin executes administratively
+as Postgres, which can also call these functions. Its other administrative
+tools are broad capabilities: the three-RPC worker limit is a prompt boundary,
+not a database restriction on that plugin. This connection is separate from
+the optional private Signal Foundry MCP connector, which was unavailable in
+the tested cloud Work account.
+
+At the next comparison launch, the server calls `purge_cloud_model_payloads`
+to erase run inputs and job payloads for terminal comparisons created at least
+48 hours earlier. Responses, assessments and reports remain available for
+comparison. This cleanup is opportunistic, not a separate timer. Operator
+schedule setup and the current verification status are recorded in section 22.

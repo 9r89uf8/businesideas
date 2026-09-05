@@ -1,6 +1,7 @@
 import { createWebhook, sleep } from "workflow";
 import { PIPELINE } from "../lib/config.js";
 import { connectionObservationFromCloudResult } from "../lib/x/for-you-connection.js";
+import { launchCloudComparison, stopCloudComparison } from "./cloud-ideation-steps.js";
 import {
   fetchAndRank,
   recordWorkflowFailure,
@@ -240,6 +241,19 @@ export async function dailyResearch({ runId, ownerId }) {
     throw new Error(message);
   }
   if (!survivorPostIds.length) return { status: "no_ideas" };
+
+  // Compare an independent cloud ideation chain against the existing API
+  // pipeline. Its queue, decisions and validation never replace API checkpoints.
+  try {
+    await launchCloudComparison({ runId, ownerId, survivorPostIds });
+  } catch {
+    // Cloud dispatch failure must not interrupt the authoritative API run.
+    try {
+      await stopCloudComparison({ runId, ownerId, message: "Cloud comparison dispatch failed." });
+    } catch {
+      // A database outage must not turn comparison bookkeeping into an API gate.
+    }
+  }
 
   let shortlist;
   try {

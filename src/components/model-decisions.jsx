@@ -87,7 +87,7 @@ function SelectedIdea({ idea }) {
   );
 }
 
-function Concepts({ concepts }) {
+function Concepts({ concepts, critiqueLabel }) {
   const savedConcepts = Array.isArray(concepts)
     ? concepts.filter((concept) => record(concept))
     : [];
@@ -110,7 +110,7 @@ function Concepts({ concepts }) {
               <dl className="mt-3 space-y-3">
                 <Field label="Concept" value={concept.summary} />
                 <Field label="Payer" value={concept.payer} />
-                <Field label="Sol's critique" value={concept.critique} />
+                <Field label={critiqueLabel} value={concept.critique} />
               </dl>
             </li>
           ))}
@@ -121,6 +121,47 @@ function Concepts({ concepts }) {
         </p>
       )}
     </div>
+  );
+}
+
+export function CandidateDecision({ result, critiqueLabel = "Sol's critique" }) {
+  const candidate = record(result);
+  if (!["candidate", "no_viable_idea"].includes(candidate?.status)) {
+    return <p className="mt-2 text-sm leading-6 text-[var(--ink-soft)]">No readable candidate decision was saved.</p>;
+  }
+  return (
+    <>
+      <p className="mt-2 text-sm font-semibold">{candidate.status === "candidate" ? "Candidate selected" : "No viable idea"}</p>
+      <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[var(--ink-soft)]">
+        {text(candidate.reason) || "No decision reason was saved."}
+      </p>
+      {candidate.status === "candidate" && <SelectedIdea idea={record(candidate.selected_idea)} />}
+      <Concepts concepts={candidate.concepts_considered} critiqueLabel={critiqueLabel} />
+    </>
+  );
+}
+
+export function ShortlistDecision({ assessment, automatic = false }) {
+  const shortlist = record(assessment);
+  if (automatic) {
+    return (
+      <p className="mt-2 text-sm leading-6 text-[var(--ink-soft)]">
+        Automatically advanced: eight or fewer posts survived, so all could proceed to independent generation.
+      </p>
+    );
+  }
+  if (!shortlist) {
+    return <p className="mt-2 text-sm leading-6 text-[var(--ink-soft)]">No shortlist assessment was saved.</p>;
+  }
+  return (
+    <dl className="mt-3 space-y-3">
+      <Field label="Decision" value={humanize(shortlist.decision)} />
+      <Field label="Reason" value={shortlist.reason} />
+      <Field label="Commercial inspiration score" value={scoreLabel(shortlist.commercial_inspiration_score)} />
+      <Field label="What changed" value={shortlist.what_changed} />
+      <Field label="Possible payer" value={shortlist.possible_payer} />
+      <Field label="Build angle" value={shortlist.one_line_build_angle} />
+    </dl>
   );
 }
 
@@ -165,28 +206,20 @@ export default function ModelDecisions({
     <details className="mt-4 min-w-0 rounded-xl border border-[var(--line)] bg-[var(--ink)]/[0.025]">
       <summary className="focus-ring cursor-pointer rounded-xl px-4 py-3 text-sm font-bold">
         <span>Model decisions</span>
+        <span className="ml-2 text-xs font-normal text-[var(--ink-soft)]">API</span>
         <span className={`ml-2 inline-block rounded-full px-2.5 py-1 align-middle text-[0.68rem] font-bold ${badgeClass}`}>
           {outcome}
         </span>
       </summary>
       <div className="min-w-0 space-y-5 border-t border-[var(--line)] p-4">
         <section className="min-w-0">
-          <h3 className="eyebrow">Sol · Independent generation</h3>
+          <h3 className="eyebrow">API · Sol · Independent generation</h3>
           {loadError ? (
             <p className="mt-2 text-sm leading-6 text-[var(--ink-soft)]">
               The saved generation response is unavailable right now. Reload to try again.
             </p>
           ) : generationStatus ? (
-            <>
-              <p className="mt-2 text-sm font-semibold">{outcome}</p>
-              <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[var(--ink-soft)]">
-                {text(result.reason) || "No decision reason was saved."}
-              </p>
-              {generationStatus === "candidate" && (
-                <SelectedIdea idea={record(result.selected_idea)} />
-              )}
-              <Concepts concepts={result.concepts_considered} />
-            </>
+            <CandidateDecision result={result} />
           ) : (
             <p className="mt-2 text-sm leading-6 text-[var(--ink-soft)]">
               {pending
@@ -197,23 +230,8 @@ export default function ModelDecisions({
         </section>
 
         <section className="min-w-0 border-t border-[var(--line)] pt-4">
-          <h3 className="eyebrow">{automaticShortlist ? "Shortlist · Automatic advancement" : "Sol · Shortlist"}</h3>
-          {automaticShortlist ? (
-            <p className="mt-2 text-sm leading-6 text-[var(--ink-soft)]">
-              Automatically advanced: eight or fewer posts survived, so all could proceed to independent generation.
-            </p>
-          ) : shortlist ? (
-            <dl className="mt-3 space-y-3">
-              <Field label="Decision" value={humanize(shortlist.decision)} />
-              <Field label="Reason" value={shortlist.reason} />
-              <Field label="Commercial inspiration score" value={scoreLabel(shortlist.commercial_inspiration_score)} />
-              <Field label="What changed" value={shortlist.what_changed} />
-              <Field label="Possible payer" value={shortlist.possible_payer} />
-              <Field label="Build angle" value={shortlist.one_line_build_angle} />
-            </dl>
-          ) : (
-            <p className="mt-2 text-sm leading-6 text-[var(--ink-soft)]">No shortlist assessment was saved.</p>
-          )}
+          <h3 className="eyebrow">{automaticShortlist ? "API shortlist · Automatic advancement" : "API · Sol · Shortlist"}</h3>
+          <ShortlistDecision assessment={shortlist} automatic={automaticShortlist} />
         </section>
 
         {context && (
