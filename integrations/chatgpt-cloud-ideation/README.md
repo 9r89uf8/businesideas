@@ -26,9 +26,10 @@ execution calls `collaboration.spawn_agent` once with a unique task name,
 Its message contains the complete self-contained child task from the prompt,
 without parent history or prior jobs. The child claims and processes one job,
 then returns its sanitized job ID/status and, in this repository revision, a
-controlled diagnostic on failure. The active schedule still has the previous
-two-field-only prompt; the diagnostic revision awaits approval before testing
-and saving.
+controlled diagnostic on failure. The revision passed all 15 non-operational
+fixture scenarios with the user's approval and is saved in the existing active
+hourly schedule. Exact equality to the tested prompt was verified after a fresh
+browser reload on September 5, 2026.
 The parent waits for completion
 or attention, never reads payloads or uses SQL, and never reuses or follows up
 with a child. If isolated spawning is unavailable or denied, the task stops;
@@ -139,6 +140,17 @@ On September 5, 2026, the repository prompt was extended with these safe failure
 diagnostics after two reported pre-claim failures exposed only job ID/status.
 Their underlying causes were not established by those reports. The diagnostic
 prompt upload to a manual offline fixture chat was blocked by automatic approval
-review and awaits explicit user approval. The fixture has not run, and the
-active schedule has not received this diagnostic revision. The existing
-two-field report remains the saved production contract.
+review. The user then explicitly approved sending the revised instructions to
+ChatGPT, testing them and updating the existing hourly schedule. The
+[non-operational Work fixture test](https://chatgpt.com/c/6a9c9acf-9554-83e8-bbe3-b8df5aa232ed)
+passed all 15 scenarios for classification, status shape, the 1,000-character
+bound and synthetic canary non-leakage. It used the exact committed prompt
+(normalized length 15,461; FNV-1a `443cc5f1`). This does not diagnose old failures
+or exercise production jobs. The revised prompt was saved to existing task
+`6a9b6225d5048191903c994bc0b91d55`, then its Instructions were reopened from a
+fresh browser tab and confirmed exactly equal to the tested prompt, with the
+same normalized length and fingerprint. The task remains active and hourly,
+every one hour with no end date. No replacement schedule was created. The saved
+production prompt now includes the controlled failure diagnostic; neither the
+synthetic test nor the save check reproduced an operational failure or recovered
+the cause of either historical failure.

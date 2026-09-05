@@ -1705,10 +1705,11 @@ complete [`worker-prompt.md`](./integrations/chatgpt-cloud-ideation/worker-promp
 the installed Supabase plugin, GPT-5.6 Sol High requested, and an hourly
 interval. Each scheduled parent must spawn one new worker child using
 `fork_turns: "none"`, the explicit Sol model and High reasoning. Only that child
-claims and processes one job. The currently saved parent receives only its
-sanitized job ID/status; the repository prompt revision adds controlled failure
-diagnostics and is awaiting approval before testing and saving. The parent
-never reads payloads or uses SQL; it uses no local project or local files.
+claims and processes one job. The saved prompt returns job ID/status plus a
+controlled diagnostic on failure. This revision passed all 15 non-operational
+fixture scenarios and was saved and verified after a fresh browser reload on
+September 5, 2026. The parent never reads payloads or uses SQL; it uses no local
+project or local files.
 Eligible paid ChatGPT schedules support recurrence up to once per hour; the
 five-minute configuration was not created. See the
 [official task frequency limits](https://help.openai.com/en/articles/10291617-tasks-in-chatgpt).
@@ -2068,9 +2069,10 @@ production build. Its 13 new timer regressions cover callback arrival before or
 during a durable sleep/status check, terminal-command grace, bounded timeout,
 the final rejected status check, parsing failures and cleanup failures. They
 assert no watchdog sleep or status check survives into EC2 shutdown/webhook
-disposal, while preserving accepted callback results. This is local code/build
-verification; it does not establish deployment of that revision or test the
-separate scheduled-worker diagnostic prompt.
+disposal, while preserving accepted callback results. Timer-fix commit
+`42fa8cf` was deployed as Vercel deployment `EQigoAfv8zd8xtwM4QsNGriPETFK`.
+These code/build checks do not test the separate scheduled-worker diagnostic
+prompt.
 
 Use Node.js 20.12 or newer.
 
@@ -2428,11 +2430,10 @@ The saved hourly parent prompt creates exactly one child with
 `collaboration.spawn_agent`, a unique task name, `fork_turns: "none"`,
 `model: "gpt-5.6-sol"` and `reasoning_effort: "high"`. It passes the complete
 self-contained worker contract without parent chat history, waits for completion
-or attention. The currently saved production prompt returns only job ID/status.
-The repository revision adds a controlled diagnostic for `failed` or
-`attention_required`, pending approval, offline evaluation and a schedule update.
-The parent does
-not read payloads, evaluate posts or call SQL. It cannot reuse or follow up with
+or attention. The saved prompt adds a controlled diagnostic for `failed` or
+`attention_required`; all 15 non-operational fixture scenarios passed, and
+the exact tested prompt was saved and reload-verified with the user's approval.
+The parent does not read payloads, evaluate posts or call SQL. It cannot reuse or follow up with
 a child; unavailable or denied isolated spawning stops the execution rather
 than falling back to direct SQL or inherited context.
 
@@ -2614,8 +2615,25 @@ Two reported pre-claim failures retained only job ID/status, leaving their
 underlying causes unestablished. The repository worker prompt now includes the
 bounded failure contract above so failures before database access can remain
 reviewable in ChatGPT. Automatic approval review blocked uploading the revised
-prompt into the manual offline fixture chat. Explicit user approval is pending;
-the fixture has not run and the revised prompt has not been saved to the active
-schedule. The earlier saved-prompt and live pipeline verification records
-describe the previous two-field output contract. No new database logging,
-permissions or tool access was added by this documentation/prompt revision.
+prompt into the manual offline fixture chat. The user then explicitly approved
+sending the revised instructions to ChatGPT, testing them, and updating the
+existing hourly schedule.
+
+The [non-operational ChatGPT Work fixture test](https://chatgpt.com/c/6a9c9acf-9554-83e8-bbe3-b8df5aa232ed)
+then passed all 15 scenarios for classification, canonical status shape, the
+1,000-character report limit and non-leakage of synthetic canary content. Its
+input matched the exact committed worker prompt after normalization: 15,461
+characters, FNV-1a `443cc5f1`. This checks simulated diagnostic behavior; it does
+not establish the causes of the earlier failures or exercise production jobs.
+
+The revised prompt was saved to the existing **Signal Foundry cloud worker**
+task `6a9b6225d5048191903c994bc0b91d55` on September 5, 2026. A fresh browser tab
+of its setup chat was opened, the task's Instructions were reopened, and exact
+string equality to the tested committed prompt was confirmed (the same
+normalized length and FNV-1a fingerprint above). The existing task remains
+active, hourly, every one hour, with no end date; no replacement schedule was
+created. Its production failure-output contract now includes the controlled
+diagnostic. The earlier saved-prompt and live pipeline records describe the
+previous two-field contract. This synthetic test and persistence check did not
+reproduce an operational failure or recover its historical cause. No new
+database logging, permissions or tool access was added by this prompt revision.
