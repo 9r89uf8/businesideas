@@ -85,12 +85,30 @@ The Source feed shows cloud decisions and published idea links for primary runs.
 Historical API runs retain their API panels and separate cloud comparisons;
 eligible older API runs can still start a comparison there. Primary runs do not
 offer that separate comparison action. The historical test above validates the
-worker and shadow path; production primary publication requires its own deployment
-and live verification record.
+worker and shadow path; the primary deployment and live verification record is
+tracked separately below.
 The primary-cutover code passed all 339 automated tests and the production build.
 Migration `20260905014539` is applied. Its live database contract test passed
 claim/submission, nonempty publication and evidence links, idempotent replay,
 shadow rejection, empty/failure completion and usage preservation. All fixtures
-were rolled back, leaving the production idea count at two. The source cutover
-deployment, saved schedule-prompt update and first live primary publication
-are still pending verification.
+were rolled back, leaving the production idea count at two.
+
+Primary cutover commit `389562e15394f3fb6fcfbe552fc420c2a56fa3ec` is deployed as
+Vercel production deployment `HTJLPiZJhmG5BehCqw2o2qfBqubv` (`READY`, 19-second
+build). The exact updated worker prompt is saved and verified after reload in
+the active hourly schedule. New manual run `43a1c953-7eba-42ff-a15d-fff1c4bedd3a`,
+created at `2026-09-05T01:53:22.64577Z`, has the verified `chatgpt_cloud` provider
+snapshot. Luna filtered 30 posts into 25 survivors; the handoff created the
+primary cloud run in `running / shortlist`, with one pending shortlist job and
+deadline `2026-09-06T01:56:01.636468Z`. API shortlist assessments, generation
+clusters, candidate results and research jobs were all zero; usage contained
+only `luna_filter`. After the saved schedule's Run now control was triggered
+around 01:58 UTC, the first primary shortlist was claimed, submitted and
+server-validated as completed for all 25 supplied posts, with eight advanced.
+Both cloud and source runs were `running / generating`, with exactly eight
+candidate jobs pending. Browser verification showed the validated shortlist,
+eight waiting generations and the saved decision rationale/score. All Sol API
+checkpoints remained zero, usage remained only `luna_filter`, and published
+ideas remained two. The remaining hourly candidate/research work and complete
+primary publication are pending; deployment, schedule save, the shared-Luna
+handoff and the first primary cloud model response are verified.

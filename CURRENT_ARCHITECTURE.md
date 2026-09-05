@@ -1722,12 +1722,12 @@ and unchanged API publication were verified. The instructions and connection
 requirements are in the
 [`cloud integration README`](./integrations/chatgpt-cloud-ideation/README.md).
 That completed test was a shadow comparison before the primary cutover. The
-repository now defaults new runs to cloud, while the last verified production
-deployment and worker test below were still API-authoritative. The primary
-migration is applied and its rolled-back database contract test passed. Deploy
-and verify the new publication path, then save the updated
-worker prompt before its first primary claim. Primary deployment verification
-is tracked separately from the historical test.
+cloud-primary cutover is now deployed for new production runs, and the exact
+updated worker prompt was saved and verified after reloading the active hourly
+schedule. The primary migration is applied and its rolled-back database
+contract test passed. A newly created manual run has the verified cloud
+provider snapshot; the first complete primary batch and live publication
+remain pending under the hourly schedule, separate from the historical shadow test.
 
 For explicit rollback, change `PIPELINE.ideationProvider` in
 `src/lib/config.js` to `api` and deploy. It affects newly created runs only;
@@ -2513,7 +2513,7 @@ path remained enabled and authoritative. The completed comparison did not
 publish its idea or alter the API run. Runtime model identity remains
 unverified, and source access remains worker-reported.
 
-### Primary cutover code and database verification: September 5, 2026 UTC
+### Primary cutover verification: September 5, 2026 UTC
 
 The cloud-primary code passed all 339 automated tests and the production build.
 Coverage includes the provider branch, primary publication preparation,
@@ -2528,6 +2528,37 @@ publication, empty/failure completion, and preservation of Luna usage with
 correct embedding accumulation. All fixture changes were rolled back; the
 production published idea count remained two.
 
-The source cutover deployment, saved schedule-prompt update and first live
-primary publication remain to be verified. The shadow execution above is
-retained as historical evidence and is not labeled a primary run.
+Commit `389562e15394f3fb6fcfbe552fc420c2a56fa3ec` reached production as Vercel
+deployment `HTJLPiZJhmG5BehCqw2o2qfBqubv`, with `READY` status and a 19-second
+build. The exact updated primary/shadow worker prompt was saved to the existing
+hourly schedule and verified after reloading the UI. The schedule remains
+active, and new production runs now use the cloud provider for Sol stages;
+shared Luna and embedding APIs remain enabled.
+
+Normal manual verification run `43a1c953-7eba-42ff-a15d-fff1c4bedd3a` was created
+at `2026-09-05T01:53:22.64577Z`. Its saved
+`settings_snapshot.ideation_provider` was verified as `chatgpt_cloud`. The normal
+collection/Luna flow filtered 30 posts and produced 25 survivors. The verified
+handoff created a `primary` cloud run in `running / shortlist`, with 25 input
+posts, Workflow `wrun_01M1QMFA86TW1R8P8FX3BWHQ5W`, and deadline
+`2026-09-06T01:56:01.636468Z`. Exactly one cloud shortlist job,
+`fa87220a-3593-4581-8a31-96a4ce998bd6`, was pending.
+
+At that handoff, the source run had zero API shortlist assessments, generation
+clusters, candidate results and `research_jobs`; its usage contained only
+`luna_filter`. Shared Luna had run, and no Sol API stages had executed. At
+approximately `01:58 UTC`, Run now was triggered on the saved schedule to
+exercise the first primary cloud claim/submission. The shortlist job was then
+claimed and submitted through the saved cloud Work schedule, and the server
+validated its response for all 25 supplied posts and marked the job completed,
+with eight posts advanced. Both the primary cloud run and its original source
+run were `running / generating`, and exactly eight candidate jobs were pending.
+API shortlist, generation and research-job checkpoints remained zero, with
+usage still only `luna_filter`; the published idea count remained two.
+Browser verification showed a Validated shortlist, zero of eight generation
+responses validated, eight waiting to start, and the stored shortlist rationale
+and score visible for `@bot`.
+
+The remaining candidate/research work and complete primary batch publication
+remain pending under the hourly schedule. The shadow execution above remains
+historical evidence and is not relabeled as a primary run.
